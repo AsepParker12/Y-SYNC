@@ -5,7 +5,8 @@
     android:id="@+id/itemRoot"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="?attr/selectableItemBackground"
+    android:background="@drawable/glass_card_ripple"
+    android:stateListAnimator="@animator/press_scale"
     android:paddingTop="@dimen/margin_small"
     android:paddingBottom="@dimen/spacing_micro"
     android:clickable="true"
@@ -21,7 +22,9 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        tools:ignore="RtlHardcoded" />
+        tools:ignore="RtlHardcoded"
+        android:background="@drawable/glass_thumb"
+        android:clipToOutline="true" />
 
     <View
         android:id="@+id/videoCountOverlay"

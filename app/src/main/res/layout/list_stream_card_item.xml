@@ -7,7 +7,8 @@
     android:layout_height="wrap_content"
     android:paddingTop="@dimen/channel_item_grid_padding"
     android:paddingBottom="@dimen/channel_item_grid_padding"
-    android:background="?attr/selectableItemBackground"
+    android:background="@drawable/glass_card_ripple"
+    android:stateListAnimator="@animator/press_scale"
     android:clickable="true"
     android:focusable="true">
 
@@ -23,7 +24,9 @@
         app:layout_constraintDimensionRatio="16:9"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toTopOf="parent"
+        android:background="@drawable/glass_thumb"
+        android:clipToOutline="true" />
 
     <org.schabi.newpipe.views.NewPipeTextView
         android:id="@+id/itemDurationView"

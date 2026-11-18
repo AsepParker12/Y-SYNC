@@ -11,16 +11,26 @@
     <style name="Base.OpeningTheme" parent="Base.V21.OpeningTheme">
         <item name="android:navigationBarColor">@color/light_youtube_primary_color</item>
     </style>
-    <style name="OpeningTheme" parent="Base.OpeningTheme" />
+    <style name="OpeningTheme" parent="Base.OpeningTheme">
+        <item name="android:windowBackground">@drawable/aurora_gradient</item>
+    </style>
 
     <!-- Base Theme -->
     <style name="Base.V21" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="actionColor">@color/white</item>
         <item name="floatingActionButtonStyle">@style/FloatingActionButtonTheme</item>
+        <item name="popupMenuStyle">@style/GlassPopupMenu</item>
+        <item name="android:popupMenuStyle">@style/GlassPopupMenu</item>
+        <item name="listPopupWindowStyle">@style/GlassPopupMenu</item>
         <item name="toolbarSearchColor">@color/white</item>
         <item name="colorControlActivated">?attr/colorPrimary</item>
     </style>
     <style name="Base" parent="Base.V21"/>
+
+    <style name="GlassPopupMenu" parent="Widget.AppCompat.PopupMenu">
+        <item name="android:popupBackground">@drawable/glass_surface</item>
+        <item name="android:popupElevation">12dp</item>
+    </style>
 
     <!-- Light Theme -->
     <style name="Base.V21.LightTheme" parent="Base">
@@ -91,32 +101,32 @@
         <item name="colorPrimary">@color/light_youtube_primary_color</item>
         <item name="colorPrimaryDark">@color/light_youtube_primary_color</item>
         <item name="colorAccent">@color/light_youtube_accent_color</item>
-        <item name="android:windowBackground">@color/light_dialog_background_color</item>
-        <item name="windowBackground">@color/light_dialog_background_color</item>
+        <item name="android:windowBackground">@drawable/glass_dialog_bg</item>
+        <item name="windowBackground">@drawable/glass_dialog_bg</item>
     </style>
 
     <style name="DarkDialogTheme" parent="Theme.AppCompat.DayNight.Dialog">
         <item name="colorPrimary">@color/dark_youtube_primary_color</item>
         <item name="colorPrimaryDark">@color/dark_youtube_primary_color</item>
         <item name="colorAccent">@color/dark_youtube_accent_color</item>
-        <item name="android:windowBackground">@color/dark_dialog_background_color</item>
-        <item name="windowBackground">@color/dark_dialog_background_color</item>
+        <item name="android:windowBackground">@drawable/glass_dialog_bg</item>
+        <item name="windowBackground">@drawable/glass_dialog_bg</item>
     </style>
 
     <style name="LightDialogMinWidthTheme" parent="Theme.AppCompat.DayNight.Dialog.MinWidth">
         <item name="colorPrimary">@color/light_youtube_primary_color</item>
         <item name="colorPrimaryDark">@color/light_youtube_primary_color</item>
         <item name="colorAccent">@color/light_youtube_accent_color</item>
-        <item name="android:windowBackground">@color/light_dialog_background_color</item>
-        <item name="windowBackground">@color/light_dialog_background_color</item>
+        <item name="android:windowBackground">@drawable/glass_dialog_bg</item>
+        <item name="windowBackground">@drawable/glass_dialog_bg</item>
     </style>
 
     <style name="DarkDialogMinWidthTheme" parent="Theme.AppCompat.DayNight.Dialog.MinWidth">
         <item name="colorPrimary">@color/dark_youtube_primary_color</item>
         <item name="colorPrimaryDark">@color/dark_youtube_primary_color</item>
         <item name="colorAccent">@color/dark_youtube_accent_color</item>
-        <item name="android:windowBackground">@color/dark_dialog_background_color</item>
-        <item name="windowBackground">@color/dark_dialog_background_color</item>
+        <item name="android:windowBackground">@drawable/glass_dialog_bg</item>
+        <item name="windowBackground">@drawable/glass_dialog_bg</item>
     </style>
 
     <!-- Settings -->

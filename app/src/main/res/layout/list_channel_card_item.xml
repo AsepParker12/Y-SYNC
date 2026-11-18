@@ -5,7 +5,8 @@
     android:id="@+id/itemRoot"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="?attr/selectableItemBackground"
+    android:background="@drawable/glass_card_ripple"
+    android:stateListAnimator="@animator/press_scale"
     android:clickable="true"
     android:focusable="true"
     android:padding="@dimen/channel_item_grid_padding">

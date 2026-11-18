@@ -234,6 +234,8 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I>
         super.initViews(rootView, savedInstanceState);
 
         itemsList = rootView.findViewById(R.id.items_list);
+        itemsList.setLayoutAnimation(android.view.animation.AnimationUtils
+                .loadLayoutAnimation(getContext(), R.anim.layout_glass_rise));
         refreshItemViewMode();
 
         final Supplier<View> listHeaderSupplier = getListHeaderSupplier();
