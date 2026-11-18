@@ -25,11 +25,17 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+          cache: gradle
 
       - name: Build release (unsigned)
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --stacktrace
+          for attempt in 1 2; do
+            ./gradlew :app:assembleRelease --stacktrace && break
+            if [ "$attempt" = "2" ]; then exit 1; fi
+            echo "Build attempt $attempt failed; retrying in 45s (transient Maven rate limits are common)..."
+            sleep 45
+          done
 
       - name: Sign APK
         env:
