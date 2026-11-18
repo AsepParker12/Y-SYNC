@@ -130,6 +130,9 @@ open class App :
         .Builder(this)
         .logger(if (BuildConfig.DEBUG) DebugLogger() else null)
         .allowRgb565(getSystemService<ActivityManager>()!!.isLowRamDevice)
+        // Y-SYNC: BlurView captures the window into a software bitmap for the
+        // glass bottom bar; HARDWARE bitmaps would crash that capture.
+        .allowHardware(false)
         .crossfade(true)
         .components {
             add(OkHttpNetworkFetcherFactory(callFactory = DownloaderImpl.getInstance().client))
