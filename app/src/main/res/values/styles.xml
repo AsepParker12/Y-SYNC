@@ -12,7 +12,7 @@
         <item name="android:navigationBarColor">@color/light_youtube_primary_color</item>
     </style>
     <style name="OpeningTheme" parent="Base.OpeningTheme">
-        <item name="android:windowBackground">@drawable/aurora_gradient</item>
+        <item name="android:windowBackground">@color/ysync_launch_bg</item>
     </style>
 
     <!-- Base Theme -->

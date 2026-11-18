@@ -261,10 +261,8 @@ public final class ThemeHelper {
     }
 
     private static String getSelectedThemeKey(final Context context) {
-        final String themeKey = context.getString(R.string.theme_key);
-        final String defaultTheme = context.getString(R.string.default_theme_value);
-        return PreferenceManager.getDefaultSharedPreferences(context)
-                .getString(themeKey, defaultTheme);
+        // Y-SYNC: only system themes exist — always follow the device day/night setting.
+        return context.getString(R.string.auto_device_theme_key);
     }
 
     private static String getSelectedNightThemeKey(final Context context) {

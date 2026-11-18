@@ -263,7 +263,12 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         mainBinding.bottomNav.setOnItemSelectedListener(this::onBottomNavItemSelected);
-        mainBinding.bottomNav.setOnItemReselectedListener(item -> { });
+        mainBinding.bottomNav.setOnItemReselectedListener(item -> {
+            // Y-SYNC: tapping Menu while it is already checked must still open the drawer.
+            if (item.getItemId() == R.id.nav_menu) {
+                mainBinding.getRoot().openDrawer(drawerLayoutBinding.navigation);
+            }
+        });
         getSupportFragmentManager().addOnBackStackChangedListener(
                 this::updateBottomNavVisibility);
         BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder)
@@ -277,6 +282,7 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onSlide(@NonNull final View bottomSheet,
                                         final float slideOffset) {
+                        updateBottomNavVisibility();
                     }
                 });
         updateBottomNavVisibility();
@@ -320,6 +326,9 @@ public class MainActivity extends AppCompatActivity {
         if (itemId == R.id.nav_menu) {
             mainBinding.getRoot().openDrawer(drawerLayoutBinding.navigation);
             updateBottomNavVisibility();
+            // The framework checks Menu after this returns; restore the current
+            // section's checked state so Menu never stays selected.
+            mainBinding.bottomNav.post(this::updateBottomNavVisibility);
             return true;
         }
         if (itemId == R.id.nav_home) {
@@ -359,9 +368,9 @@ public class MainActivity extends AppCompatActivity {
         final BottomSheetBehavior<?> behavior =
                 BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
         final int sheetState = behavior.getState();
-        final boolean playerVisible = sheetState != BottomSheetBehavior.STATE_HIDDEN
-                && (sheetState != BottomSheetBehavior.STATE_COLLAPSED
-                || behavior.getPeekHeight() > 0);
+        // Y-SYNC: any player presence (mini player, expanded, fullscreen, dragging)
+        // hides the floating bar completely — it may only float over plain lists.
+        final boolean playerVisible = sheetState != BottomSheetBehavior.STATE_HIDDEN;
         final boolean show = topLevel && !playerVisible;
         mainBinding.bottomBlur.setVisibility(show ? View.VISIBLE : View.GONE);
         final int bottomPadding = show
