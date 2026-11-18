@@ -189,6 +189,21 @@ public class MainFragment extends BaseFragment implements TabLayout.OnTabSelecte
         tabsList.clear();
         tabsList.addAll(tabsManager.getTabs());
 
+        // Y-SYNC: Feed, Subscriptions and Bookmarks live in the floating bottom
+        // navigation bar, so the home pager only hosts the remaining tabs.
+        final List<Tab> pagerTabs = new ArrayList<>();
+        for (final Tab tab : tabsList) {
+            if (!(tab instanceof Tab.FeedTab)
+                    && !(tab instanceof Tab.SubscriptionsTab)
+                    && !(tab instanceof Tab.BookmarksTab)) {
+                pagerTabs.add(tab);
+            }
+        }
+        if (!pagerTabs.isEmpty()) {
+            tabsList.clear();
+            tabsList.addAll(pagerTabs);
+        }
+
         if (pagerAdapter == null || !pagerAdapter.sameTabs(tabsList)) {
             pagerAdapter = new SelectedTabsPagerAdapter(requireContext(),
                     getChildFragmentManager(), tabsList);

@@ -73,6 +73,9 @@ import org.schabi.newpipe.extractor.exceptions.ExtractionException;
 import org.schabi.newpipe.extractor.services.peertube.PeertubeInstance;
 import org.schabi.newpipe.fragments.BackPressable;
 import org.schabi.newpipe.fragments.MainFragment;
+import org.schabi.newpipe.local.bookmark.BookmarkFragment;
+import org.schabi.newpipe.local.feed.FeedFragment;
+import org.schabi.newpipe.local.subscription.SubscriptionFragment;
 import org.schabi.newpipe.fragments.detail.VideoDetailFragment;
 import org.schabi.newpipe.fragments.list.comments.CommentRepliesFragment;
 import org.schabi.newpipe.fragments.list.search.SearchFragment;
@@ -183,6 +186,7 @@ public class MainActivity extends AppCompatActivity {
         } catch (final Exception e) {
             ErrorUtil.showUiErrorSnackbar(this, "Setting up drawer", e);
         }
+        setupBottomNav();
         if (DeviceUtils.isTv(this)) {
             FocusOverlayView.setupFocusObserver(this);
         }
@@ -238,6 +242,96 @@ public class MainActivity extends AppCompatActivity {
         sharedPrefEditor.putBoolean(KEY_IS_IN_BACKGROUND, true).apply();
         Log.d(TAG, "App moved to background");
     }
+    /*//////////////////////////////////////////////////////////////////////////
+    // Bottom navigation (Y-SYNC: floating glass bar, YouTube-style)
+    //////////////////////////////////////////////////////////////////////////*/
+
+    private void setupBottomNav() {
+        if (DeviceUtils.isTv(this)) {
+            mainBinding.bottomNav.setVisibility(View.GONE);
+            return;
+        }
+        mainBinding.bottomNav.setOnItemSelectedListener(this::onBottomNavItemSelected);
+        mainBinding.bottomNav.setOnItemReselectedListener(item -> { });
+        getSupportFragmentManager().addOnBackStackChangedListener(
+                this::updateBottomNavVisibility);
+        BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder)
+                .addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
+                    @Override
+                    public void onStateChanged(@NonNull final View bottomSheet,
+                                               final int newState) {
+                        updateBottomNavVisibility();
+                    }
+
+                    @Override
+                    public void onSlide(@NonNull final View bottomSheet,
+                                        final float slideOffset) {
+                    }
+                });
+        updateBottomNavVisibility();
+    }
+
+    private boolean onBottomNavItemSelected(@NonNull final MenuItem item) {
+        final FragmentManager fm = getSupportFragmentManager();
+        final Fragment current = fm.findFragmentById(R.id.fragment_holder);
+        final int itemId = item.getItemId();
+        if (itemId == R.id.nav_home) {
+            if (!(current instanceof MainFragment)) {
+                NavigationHelper.gotoMainFragment(fm);
+            }
+        } else if (itemId == R.id.nav_feed) {
+            if (!(current instanceof FeedFragment)) {
+                fm.popBackStackImmediate(NavigationHelper.MAIN_FRAGMENT_TAG, 0);
+                NavigationHelper.openFeedFragment(fm);
+            }
+        } else if (itemId == R.id.nav_subscriptions) {
+            if (!(current instanceof SubscriptionFragment)) {
+                fm.popBackStackImmediate(NavigationHelper.MAIN_FRAGMENT_TAG, 0);
+                NavigationHelper.openSubscriptionFragment(fm);
+            }
+        } else if (itemId == R.id.nav_bookmarks) {
+            if (!(current instanceof BookmarkFragment)) {
+                fm.popBackStackImmediate(NavigationHelper.MAIN_FRAGMENT_TAG, 0);
+                NavigationHelper.openBookmarksFragment(fm);
+            }
+        }
+        updateBottomNavVisibility();
+        return true;
+    }
+
+    private void updateBottomNavVisibility() {
+        if (mainBinding == null || DeviceUtils.isTv(this)) {
+            return;
+        }
+        final Fragment current = getSupportFragmentManager()
+                .findFragmentById(R.id.fragment_holder);
+        final boolean topLevel = current instanceof MainFragment
+                || current instanceof FeedFragment
+                || current instanceof SubscriptionFragment
+                || current instanceof BookmarkFragment;
+        final BottomSheetBehavior<?> behavior =
+                BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
+        final int sheetState = behavior.getState();
+        final boolean playerVisible = sheetState != BottomSheetBehavior.STATE_HIDDEN
+                && (sheetState != BottomSheetBehavior.STATE_COLLAPSED
+                || behavior.getPeekHeight() > 0);
+        final boolean show = topLevel && !playerVisible;
+        mainBinding.bottomNav.setVisibility(show ? View.VISIBLE : View.GONE);
+        final int bottomPadding = show
+                ? Math.round(92 * getResources().getDisplayMetrics().density) : 0;
+        mainBinding.fragmentHolder.setPadding(0, 0, 0, bottomPadding);
+        if (current instanceof MainFragment) {
+            mainBinding.bottomNav.getMenu().findItem(R.id.nav_home).setChecked(true);
+        } else if (current instanceof FeedFragment) {
+            mainBinding.bottomNav.getMenu().findItem(R.id.nav_feed).setChecked(true);
+        } else if (current instanceof SubscriptionFragment) {
+            mainBinding.bottomNav.getMenu().findItem(R.id.nav_subscriptions)
+                    .setChecked(true);
+        } else if (current instanceof BookmarkFragment) {
+            mainBinding.bottomNav.getMenu().findItem(R.id.nav_bookmarks).setChecked(true);
+        }
+    }
+
     private void setupDrawer() throws ExtractionException {
         addDrawerMenuForCurrentService();
 

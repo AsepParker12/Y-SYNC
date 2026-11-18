@@ -10,10 +10,14 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentTop="true"
-        android:background="?attr/colorPrimary"
-        app:tabRippleColor="@color/white"
-        app:tabIconTint="@color/white"
-        app:tabIndicatorColor="@color/white"
+        android:background="@android:color/transparent"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        app:tabBackground="@drawable/glass_chip_selector"
+        app:tabRippleColor="@android:color/transparent"
+        app:tabIconTint="@color/glass_chip_text"
+        app:tabTextColor="@color/glass_chip_text"
+        app:tabIndicatorHeight="0dp"
         app:tabGravity="fill"
         app:tabMinWidth="60dp" />
 

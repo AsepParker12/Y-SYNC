@@ -52,6 +52,10 @@
     <!-- Miscellaneous -->
     <color name="glass_ripple">#337C3AED</color>
     <color name="glass_card_solid">#E8FFFFFF</color>
+    <color name="glass_nav_selected">#7C3AED</color>
+    <color name="glass_nav_unselected">#6E6890</color>
+    <color name="glass_nav_stroke">#26000000</color>
+    <color name="glass_chip_text_default">#241F35</color>
     <color name="queue_background_color">@color/dark_queue_background_color</color>
     <color name="drawer_header_font_color">#F2FFFFFF</color>
     <color name="duration_background_color">#aa000000</color>
