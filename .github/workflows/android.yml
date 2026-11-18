@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish GitHub Release v1.2.0"
+        description: "Publish GitHub Release v1.3.0"
         type: boolean
         default: false
 
@@ -51,36 +51,36 @@ jobs:
             --ks-key-alias ysync \
             --ks-pass env:KEYSTORE_PASSWORD \
             --key-pass env:KEYSTORE_PASSWORD \
-            --out Y-SYNC-1.2.0.apk aligned.apk
-          "$BT/apksigner" verify --print-certs Y-SYNC-1.2.0.apk
-          sha256sum Y-SYNC-1.2.0.apk > Y-SYNC-1.2.0.apk.sha256
-          ls -lh Y-SYNC-1.2.0.apk
+            --out Y-SYNC-1.3.0.apk aligned.apk
+          "$BT/apksigner" verify --print-certs Y-SYNC-1.3.0.apk
+          sha256sum Y-SYNC-1.3.0.apk > Y-SYNC-1.3.0.apk.sha256
+          ls -lh Y-SYNC-1.3.0.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Y-SYNC-1.2.0
+          name: Y-SYNC-1.3.0
           path: |
-            Y-SYNC-1.2.0.apk
-            Y-SYNC-1.2.0.apk.sha256
+            Y-SYNC-1.3.0.apk
+            Y-SYNC-1.3.0.apk.sha256
 
       - name: Publish GitHub Release
         if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.0
-          name: Y-SYNC v1.2.0
+          tag_name: v1.3.0
+          name: Y-SYNC v1.3.0
           files: |
-            Y-SYNC-1.2.0.apk
-            Y-SYNC-1.2.0.apk.sha256
+            Y-SYNC-1.3.0.apk
+            Y-SYNC-1.3.0.apk.sha256
           body: |
-            **Y-SYNC 1.2.0** — YouTube-style layout. Free and open source (GPL-3.0).
+            **Y-SYNC 1.3.0** — Real glass, Live home. Free and open source (GPL-3.0).
 
-            - New layout following the YouTube app: floating glass bottom bar (Home, What's New, Subscriptions, Bookmarks)
-            - Category chips on Home: Music, Gaming, Movies & Shows, Live
-            - Liquid Glass UI with iOS-style motion from 1.1.0
+            - Floating bottom bar is now REAL frosted glass with live backdrop blur, 5 tabs: Home, What's New, Subscriptions, Bookmarks, Menu
+            - Home opens straight into Live streams and videos — no more empty trending charts
+            - Modern rounded icons, cleaner top bar (drawer now opens from the Menu tab)
             - Watch videos and live streams while they are on air — no ads
             - Background playback, popup/PiP player, downloads up to 4K
             - Local subscriptions and history — no Google account needed
 
-            Install: download `Y-SYNC-1.2.0.apk` below and open it on your Android phone.
+            Install: download `Y-SYNC-1.3.0.apk` below and open it on your Android phone.
