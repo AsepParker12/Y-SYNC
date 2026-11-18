@@ -7,7 +7,7 @@
     <string name="current_service_key">service</string>
     <string name="default_service_value">@string/youtube</string>
 
-    <string name="saved_tabs_key">saved_tabs_key_v2</string>
+    <string name="saved_tabs_key">saved_tabs_key_v3</string>
 
     <!-- Key values -->
     <string name="kao_last_checked_key">kao_last_checked</string>

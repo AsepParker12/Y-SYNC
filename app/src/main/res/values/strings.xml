@@ -36,6 +36,7 @@
     <string name="tab_subscriptions">Subscriptions</string>
     <string name="bottom_nav_home">Home</string>
     <string name="bottom_nav_bookmarks">Bookmarks</string>
+    <string name="bottom_nav_menu">Menu</string>
     <string name="tab_bookmarks">Bookmarked Playlists</string>
     <string name="tab_bookmarks_short">Playlists</string>
     <string name="tab_choose">Choose Tab</string>

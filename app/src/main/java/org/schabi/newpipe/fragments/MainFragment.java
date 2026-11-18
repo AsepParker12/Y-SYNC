@@ -211,6 +211,8 @@ public class MainFragment extends BaseFragment implements TabLayout.OnTabSelecte
 
         binding.pager.setAdapter(null);
         binding.pager.setAdapter(pagerAdapter);
+        binding.mainTabLayout.setVisibility(
+                tabsList.size() <= 1 ? View.GONE : View.VISIBLE);
 
         updateTabsIconAndDescription();
         updateTitleForTab(binding.pager.getCurrentItem());

@@ -27,12 +27,14 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Outline;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.ViewOutlineProvider;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -59,6 +61,8 @@ import androidx.fragment.app.FragmentManager;
 import androidx.preference.PreferenceManager;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
+
+import eightbitlab.com.blurview.RenderEffectBlur;
 
 import org.schabi.newpipe.databinding.ActivityMainBinding;
 import org.schabi.newpipe.databinding.DrawerHeaderBinding;
@@ -248,7 +252,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupBottomNav() {
         if (DeviceUtils.isTv(this)) {
-            mainBinding.bottomNav.setVisibility(View.GONE);
+            mainBinding.bottomBlur.setVisibility(View.GONE);
             return;
         }
         mainBinding.bottomNav.setOnItemSelectedListener(this::onBottomNavItemSelected);
@@ -269,12 +273,48 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
         updateBottomNavVisibility();
+        setupBottomBlur();
+        hideToolbarHamburger();
+    }
+
+    private void setupBottomBlur() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return;
+        }
+        final float radiusPx = 32 * getResources().getDisplayMetrics().density;
+        mainBinding.bottomBlur.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(final View view, final Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
+            }
+        });
+        mainBinding.bottomBlur.setClipToOutline(true);
+        mainBinding.bottomBlur.setupWith(mainBinding.getRoot(), new RenderEffectBlur())
+                .setFrameClearDrawable(ContextCompat.getDrawable(this,
+                        R.drawable.glass_nav_tint))
+                .setBlurRadius(18f);
+    }
+
+    private void hideToolbarHamburger() {
+        // Y-SYNC: the drawer is opened from the bottom bar's Menu tab instead.
+        if (toggle != null) {
+            toggle.setDrawerIndicatorEnabled(false);
+        }
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(false);
+        }
+        toolbarLayoutBinding.toolbar.setNavigationIcon(null);
     }
 
     private boolean onBottomNavItemSelected(@NonNull final MenuItem item) {
         final FragmentManager fm = getSupportFragmentManager();
         final Fragment current = fm.findFragmentById(R.id.fragment_holder);
         final int itemId = item.getItemId();
+        if (itemId == R.id.nav_menu) {
+            mainBinding.getRoot().openDrawer(drawerLayoutBinding.navigation);
+            updateBottomNavVisibility();
+            return true;
+        }
         if (itemId == R.id.nav_home) {
             if (!(current instanceof MainFragment)) {
                 NavigationHelper.gotoMainFragment(fm);
@@ -316,7 +356,7 @@ public class MainActivity extends AppCompatActivity {
                 && (sheetState != BottomSheetBehavior.STATE_COLLAPSED
                 || behavior.getPeekHeight() > 0);
         final boolean show = topLevel && !playerVisible;
-        mainBinding.bottomNav.setVisibility(show ? View.VISIBLE : View.GONE);
+        mainBinding.bottomBlur.setVisibility(show ? View.VISIBLE : View.GONE);
         final int bottomPadding = show
                 ? Math.round(92 * getResources().getDisplayMetrics().density) : 0;
         mainBinding.fragmentHolder.setPadding(0, 0, 0, bottomPadding);
@@ -393,6 +433,9 @@ public class MainActivity extends AppCompatActivity {
         int kioskMenuItemId = 0;
 
         for (final String ks : service.getKioskList().getAvailableKiosks()) {
+            if (currentServiceId == 0 && !"live".equals(ks)) {
+                continue;
+            }
             drawerLayoutBinding.navigation.getMenu()
                     .add(R.id.menu_kiosks_group, kioskMenuItemId, 0, KioskTranslator
                             .getTranslatedKioskName(ks, this))
@@ -469,6 +512,9 @@ public class MainActivity extends AppCompatActivity {
         final StreamingService currentService = ServiceHelper.getSelectedService(this);
         int kioskMenuItemId = 0;
         for (final String kioskId : currentService.getKioskList().getAvailableKiosks()) {
+            if (currentService.getServiceId() == 0 && !"live".equals(kioskId)) {
+                continue;
+            }
             if (kioskMenuItemId == item.getItemId()) {
                 NavigationHelper.openKioskFragment(getSupportFragmentManager(),
                         currentService.getServiceId(), kioskId);
@@ -887,6 +933,7 @@ public class MainActivity extends AppCompatActivity {
             getSupportActionBar().setDisplayHomeAsUpEnabled(false);
             if (toggle != null) {
                 toggle.syncState();
+                toolbarLayoutBinding.toolbar.setNavigationIcon(null);
                 toolbarLayoutBinding.toolbar.setNavigationOnClickListener(v -> mainBinding.getRoot()
                         .open());
                 mainBinding.getRoot().setDrawerLockMode(DrawerLayout.LOCK_MODE_UNDEFINED);

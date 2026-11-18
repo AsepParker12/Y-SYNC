@@ -255,6 +255,7 @@
     <string name="tab_subscriptions">Langganan</string>
     <string name="bottom_nav_home">Beranda</string>
     <string name="bottom_nav_bookmarks">Penanda</string>
+    <string name="bottom_nav_menu">Menu</string>
     <string name="use_inexact_seek_title">Gunakan pencarian cepat yang tidak tepat</string>
     <string name="use_inexact_seek_summary">Pencarian tidak tepat memungkinkan pemutar untuk mencari posisi dengan lebih cepat, namun dengan presisi yang berkurang. Mencari selama 5, 15, atau 25 detik tidak akan berhasil</string>
     <string name="app_license">Aplikasi ini adalah perangkat lunak bebas copyleft: Anda dapat menggunakan, mempelajari, membagikan, dan memperbaikinya sesuka hati. Secara khusus, Anda dapat mendistribusikan dan/atau memodifikasinya berdasarkan ketentuan Lisensi Publik Umum GNU sebagaimana diterbitkan oleh Free Software Foundation, baik versi 3 dari Lisensi, atau (sesuai pilihan Anda) versi apapun yang lebih baru.</string>
