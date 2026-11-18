@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
-rootProject.name = "Y-SYNC"
+rootProject.name = "NewPipe"
 
 pluginManagement {
     repositories {
