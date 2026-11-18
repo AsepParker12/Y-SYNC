@@ -279,21 +279,29 @@ public class MainActivity extends AppCompatActivity {
         });
         getSupportFragmentManager().addOnBackStackChangedListener(
                 this::updateBottomNavVisibility);
-        BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder)
-                .addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
-                    @Override
-                    public void onStateChanged(@NonNull final View bottomSheet,
-                                               final int newState) {
-                        updateBottomNavVisibility();
-                    }
+        final BottomSheetBehavior<?> sheetBehavior =
+                BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
+        playerSlideOffset = sheetOffsetForState(sheetBehavior.getState());
+        sheetBehavior.addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
+            @Override
+            public void onStateChanged(@NonNull final View bottomSheet,
+                                       final int newState) {
+                if (newState != BottomSheetBehavior.STATE_DRAGGING
+                        && newState != BottomSheetBehavior.STATE_SETTLING) {
+                    playerSlideOffset = sheetOffsetForState(newState);
+                }
+                updateBottomNavVisibility();
+            }
 
-                    @Override
-                    public void onSlide(@NonNull final View bottomSheet,
-                                        final float slideOffset) {
-                        updateBottomNavVisibility();
-                    }
-                });
+            @Override
+            public void onSlide(@NonNull final View bottomSheet,
+                                final float slideOffset) {
+                playerSlideOffset = slideOffset;
+                updateBottomNavVisibility();
+            }
+        });
         updateBottomNavVisibility();
+        mainBinding.bottomNav.post(this::updateBottomNavVisibility);
         setupBottomBlur();
         hideToolbarHamburger();
     }
@@ -430,6 +438,21 @@ public class MainActivity extends AppCompatActivity {
         return true;
     }
 
+    // Last known player sheet offset: -1 hidden, 0 collapsed (mini player),
+    // 1 expanded. Kept from the sheet callbacks; state alone is not reliable
+    // because the sheet starts out COLLAPSED with peekHeight 0 (no player).
+    private float playerSlideOffset = -1f;
+
+    private static float sheetOffsetForState(final int state) {
+        if (state == BottomSheetBehavior.STATE_EXPANDED
+                || state == BottomSheetBehavior.STATE_HALF_EXPANDED) {
+            return 1f;
+        } else if (state == BottomSheetBehavior.STATE_COLLAPSED) {
+            return 0f;
+        }
+        return -1f;
+    }
+
     private void updateBottomNavVisibility() {
         if (mainBinding == null || DeviceUtils.isTv(this)) {
             return;
@@ -443,13 +466,41 @@ public class MainActivity extends AppCompatActivity {
         final BottomSheetBehavior<?> behavior =
                 BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
         final int sheetState = behavior.getState();
-        // Y-SYNC: any player presence (mini player, expanded, fullscreen, dragging)
-        // hides the floating bar completely — it may only float over plain lists.
-        final boolean playerVisible = sheetState != BottomSheetBehavior.STATE_HIDDEN;
-        final boolean show = topLevel && !playerVisible;
+        // Y-SYNC: the sheet starts out COLLAPSED with peekHeight 0 and no player
+        // fragment attached — that is NOT a playing video. A player only counts
+        // when one really exists (fragment attached or a real peek height set)
+        // and the sheet is not hidden. (v1.6.0 trusted the state alone, so the
+        // bar stayed hidden until a video had been opened and closed once.)
+        final boolean playerPresent = sheetState != BottomSheetBehavior.STATE_HIDDEN
+                && (getSupportFragmentManager()
+                        .findFragmentById(R.id.fragment_player_holder) != null
+                        || behavior.getPeekHeight() > 0);
+        final boolean playerExpanded = playerPresent && playerSlideOffset > 0f;
+        final boolean miniPlayer = playerPresent && !playerExpanded;
+        final boolean show = topLevel && !playerExpanded;
         mainBinding.bottomBlur.setVisibility(show ? View.VISIBLE : View.GONE);
-        final int bottomPadding = show
-                ? Math.round(92 * getResources().getDisplayMetrics().density) : 0;
+        // Y-SYNC: stack the mini player directly above the floating bar instead
+        // of letting it cover the bar — lift the sheet by the bar's footprint,
+        // easing the lift away as the player expands.
+        final float density = getResources().getDisplayMetrics().density;
+        int barFootprint = Math.round(70 * density);
+        if (mainBinding.bottomBlur.getHeight() > 0
+                && mainBinding.bottomBlur.getLayoutParams()
+                        instanceof ViewGroup.MarginLayoutParams) {
+            barFootprint = mainBinding.bottomBlur.getHeight()
+                    + ((ViewGroup.MarginLayoutParams)
+                            mainBinding.bottomBlur.getLayoutParams()).bottomMargin;
+        }
+        final float lift = topLevel && playerPresent
+                ? -barFootprint * (1f - Math.max(playerSlideOffset, 0f)) : 0f;
+        mainBinding.fragmentPlayerHolder.setTranslationY(lift);
+        int bottomPadding = 0;
+        if (show) {
+            bottomPadding = Math.round(92 * density);
+            if (miniPlayer) {
+                bottomPadding += behavior.getPeekHeight();
+            }
+        }
         mainBinding.fragmentHolder.setPadding(0, 0, 0, bottomPadding);
         if (current instanceof MainFragment) {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_home).setChecked(true);
