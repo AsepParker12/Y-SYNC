@@ -33,6 +33,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.ViewOutlineProvider;
 import android.view.LayoutInflater;
@@ -45,6 +46,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.Spinner;
+import android.widget.ScrollView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -54,6 +56,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.GravityCompat;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.core.widget.NestedScrollView;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentContainerView;
@@ -62,6 +66,7 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 
+import eightbitlab.com.blurview.BlurView;
 import eightbitlab.com.blurview.RenderEffectBlur;
 
 import org.schabi.newpipe.databinding.ActivityMainBinding;
@@ -77,6 +82,7 @@ import org.schabi.newpipe.extractor.exceptions.ExtractionException;
 import org.schabi.newpipe.extractor.services.peertube.PeertubeInstance;
 import org.schabi.newpipe.fragments.BackPressable;
 import org.schabi.newpipe.fragments.MainFragment;
+import org.schabi.newpipe.fragments.detail.VideoDetailFragment;
 import org.schabi.newpipe.local.bookmark.BookmarkFragment;
 import org.schabi.newpipe.local.feed.FeedFragment;
 import org.schabi.newpipe.local.subscription.SubscriptionFragment;
@@ -109,6 +115,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.WeakHashMap;
 import java.util.Objects;
 
 public class MainActivity extends AppCompatActivity {
@@ -198,6 +205,7 @@ public class MainActivity extends AppCompatActivity {
             ErrorUtil.showUiErrorSnackbar(this, "Setting up drawer", e);
         }
         setupBottomNav();
+        setupTopGlass();
         if (DeviceUtils.isTv(this)) {
             FocusOverlayView.setupFocusObserver(this);
         }
@@ -288,6 +296,73 @@ public class MainActivity extends AppCompatActivity {
         updateBottomNavVisibility();
         setupBottomBlur();
         hideToolbarHamburger();
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
+    // Top bar (Y-SYNC: real liquid glass — content scrolls behind and blurs)
+    //////////////////////////////////////////////////////////////////////////*/
+
+    private final WeakHashMap<View, Boolean> topGlassPaddedViews = new WeakHashMap<>();
+
+    private void setupTopGlass() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ((BlurView) toolbarLayoutBinding.getRoot())
+                    .setupWith(mainBinding.getRoot(), new RenderEffectBlur())
+                    .setFrameClearDrawable(ContextCompat.getDrawable(this,
+                            R.drawable.glass_nav_tint))
+                    .setBlurRadius(18f);
+        }
+        getSupportFragmentManager().registerFragmentLifecycleCallbacks(
+                new FragmentManager.FragmentLifecycleCallbacks() {
+                    @Override
+                    public void onFragmentViewCreated(@NonNull final FragmentManager fm,
+                                                      @NonNull final Fragment fragment,
+                                                      @NonNull final View view,
+                                                      @Nullable final Bundle savedInstanceState) {
+                        applyTopGlassPadding(fragment, view);
+                    }
+                }, true);
+    }
+
+    private void applyTopGlassPadding(final Fragment fragment, final View view) {
+        // The player sheet and the video detail page manage their own top area.
+        if (fragment.getId() == R.id.fragment_player_holder
+                || fragment instanceof VideoDetailFragment) {
+            return;
+        }
+        final View scrollView = findTopScrollView(view);
+        if (scrollView == null || topGlassPaddedViews.containsKey(scrollView)) {
+            return;
+        }
+        final TypedValue typedValue = new TypedValue();
+        getTheme().resolveAttribute(android.R.attr.actionBarSize, typedValue, true);
+        final int topInset = TypedValue.complexToDimensionPixelSize(typedValue.data,
+                getResources().getDisplayMetrics());
+        scrollView.setPadding(scrollView.getPaddingLeft(),
+                scrollView.getPaddingTop() + topInset,
+                scrollView.getPaddingRight(), scrollView.getPaddingBottom());
+        ((ViewGroup) scrollView).setClipToPadding(false);
+        topGlassPaddedViews.put(scrollView, Boolean.TRUE);
+    }
+
+    private View findTopScrollView(final View view) {
+        if (view instanceof RecyclerView || view instanceof ScrollView
+                || view instanceof NestedScrollView) {
+            return view;
+        }
+        if (view instanceof ViewGroup) {
+            if (view.getClass().getName().contains("ViewPager2")) {
+                return null;
+            }
+            final ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                final View found = findTopScrollView(group.getChildAt(i));
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     private void setupBottomBlur() {
