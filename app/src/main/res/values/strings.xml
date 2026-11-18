@@ -908,4 +908,8 @@
     <string name="api23_requirement_dialog_title">Y-SYNC is dropping support for Android 5</string>
     <string name="api23_requirement_dialog_message">Unfortunately Y-SYNC depends on a few libraries that dropped support for Android 5.0 and 5.1. The next Y-SYNC release will therefore only work on devices with Android 6 or higher, sadly. Read more in the blogpost.</string>
     <string name="api23_requirement_dialog_blogpost">Blogpost</string>
+    <string name="lock_subtitle">Enter your access code to continue</string>
+    <string name="lock_hint">Access code</string>
+    <string name="lock_button">Unlock</string>
+    <string name="lock_error">Wrong code, try again</string>
 </resources>

@@ -814,4 +814,8 @@
     <string name="api23_requirement_dialog_blogpost">Postingan</string>
     <string name="channel_tab_podcasts">Podcast</string>
     <string name="channel_tab_courses">Kursus</string>
+    <string name="lock_subtitle">Masukkan kode akses untuk melanjutkan</string>
+    <string name="lock_hint">Kode akses</string>
+    <string name="lock_button">Masuk</string>
+    <string name="lock_error">Kode salah, coba lagi</string>
 </resources>

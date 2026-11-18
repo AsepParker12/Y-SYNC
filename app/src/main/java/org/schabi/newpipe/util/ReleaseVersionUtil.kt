@@ -11,9 +11,9 @@ import org.schabi.newpipe.error.ErrorUtil.Companion.createNotification
 import org.schabi.newpipe.error.UserAction
 
 object ReleaseVersionUtil {
-    // Public key of the certificate that is used in NewPipe release versions
+    // Public key of the certificate that is used in Y-SYNC release versions
     private const val RELEASE_CERT_PUBLIC_KEY_SHA256 =
-        "cb84069bd68116bafae5ee4ee5b08a567aa6d898404e7cb12f9e756df5cf5cab"
+        "7efb4b5334a8abed78bb643edfc6ac4d38aaf616c810fbebfaeaef57dc360ce9"
 
     @OptIn(ExperimentalStdlibApi::class)
     val isReleaseApk by lazy {

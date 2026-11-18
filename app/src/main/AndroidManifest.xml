@@ -40,6 +40,10 @@
         android:memtagMode="async"
         tools:ignore="AllowBackup">
         <activity
+            android:name=".LockActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"

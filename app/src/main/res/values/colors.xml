@@ -90,4 +90,5 @@
 
     <color name="black">#000</color>
 
+    <color name="ysync_lock_bg">#0D0A14</color>
 </resources>

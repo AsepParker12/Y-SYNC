@@ -170,6 +170,13 @@ public class MainActivity extends AppCompatActivity {
         }
 
         super.onCreate(savedInstanceState);
+
+        // Y-SYNC: personal access gate \u2014 ask for the access code once per install.
+        if (!AccessGate.INSTANCE.isUnlocked(this)) {
+            startActivity(new Intent(this, LockActivity.class));
+            finish();
+            return;
+        }
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         sharedPrefEditor = sharedPreferences.edit();
 
@@ -224,9 +231,9 @@ public class MainActivity extends AppCompatActivity {
 
         final App app = App.getInstance();
 
-        if (sharedPreferences.getBoolean(app.getString(R.string.update_app_key), false)
+        if (sharedPreferences.getBoolean(app.getString(R.string.update_app_key), true)
                 && sharedPreferences
-                .getBoolean(app.getString(R.string.update_check_consent_key), false)) {
+                .getBoolean(app.getString(R.string.update_check_consent_key), true)) {
             // Start the worker which is checking all conditions
             // and eventually searching for a new version.
             NewVersionWorker.enqueueNewVersionCheckingWork(app, false);
