@@ -20,8 +20,8 @@
     <string name="github_url">https://github.com/AsepParker12/Y-SYNC</string>
     <string name="donation_url">https://github.com/AsepParker12/Y-SYNC</string>
     <string name="website_url">https://github.com/AsepParker12/Y-SYNC</string>
-    <string name="privacy_policy_url">https://github.com/AsepParker12/Y-SYNClegal/privacy/</string>
-    <string name="faq_url">https://github.com/AsepParker12/Y-SYNCFAQ/</string>
+    <string name="privacy_policy_url">https://github.com/AsepParker12/Y-SYNC</string>
+    <string name="faq_url">https://github.com/AsepParker12/Y-SYNC</string>
     <string name="service_kiosk_string">%1$s/%2$s</string>
     <string name="youtube">YouTube</string>
     <string name="preferred_open_action_share_menu_title">@string/app_name</string>
