@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish GitHub Release v1.17.0"
+        description: "Publish GitHub Release v1.18.0"
         type: boolean
         default: false
 
@@ -51,31 +51,34 @@ jobs:
             --ks-key-alias ysync \
             --ks-pass env:KEYSTORE_PASSWORD \
             --key-pass env:KEYSTORE_PASSWORD \
-            --out Y-SYNC-1.17.0.apk aligned.apk
-          "$BT/apksigner" verify --print-certs Y-SYNC-1.17.0.apk
-          sha256sum Y-SYNC-1.17.0.apk > Y-SYNC-1.17.0.apk.sha256
-          ls -lh Y-SYNC-1.17.0.apk
+            --out Y-SYNC-1.18.0.apk aligned.apk
+          "$BT/apksigner" verify --print-certs Y-SYNC-1.18.0.apk
+          sha256sum Y-SYNC-1.18.0.apk > Y-SYNC-1.18.0.apk.sha256
+          ls -lh Y-SYNC-1.18.0.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Y-SYNC-1.17.0
+          name: Y-SYNC-1.18.0
           path: |
-            Y-SYNC-1.17.0.apk
-            Y-SYNC-1.17.0.apk.sha256
+            Y-SYNC-1.18.0.apk
+            Y-SYNC-1.18.0.apk.sha256
 
       - name: Publish GitHub Release
         if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.17.0
-          name: Y-SYNC v1.17.0
+          tag_name: v1.18.0
+          name: Y-SYNC v1.18.0
           files: |
-            Y-SYNC-1.17.0.apk
-            Y-SYNC-1.17.0.apk.sha256
+            Y-SYNC-1.18.0.apk
+            Y-SYNC-1.18.0.apk.sha256
           body: |
-            **Y-SYNC 1.17.0** — The big stability round: the playback error reports are fixed, the bars behave from the first frame, and live chat is done right. Free and open source (GPL-3.0).
+            **Y-SYNC 1.18.0** — Live chat page repaired, real blur that works on more GPUs, and a Live tab in the bottom bar. Free and open source (GPL-3.0).
 
+            - Fixed: the Live Chat tab showed a black void — the 1.17.0 video-pinning change accidentally shrank the whole watch-page content area; the pin now works without touching the page layout, and the chat list scrolls under the pinned video as intended
+            - Fixed: the floating bars could still look solid on some phones — the blur now renders through a software bitmap path instead of a GPU render node that some Mali GPUs play back empty or corrupted (the same path behind the old lime-green flashes)
+            - Changed: the bottom bar's third tab is now Live (Langsung) — it opens the live streams page directly; Subscriptions now lives in the menu drawer
             - Fixed: the frequent "Y-SYNC ran into an error" reports during playback — Shorts kept up to five video decoders allocated at once and starved the main player on smaller phones; idle Shorts players now release their decoders, and a one-off decoder failure recovers silently once instead of ending playback with an error report
             - Fixed: the floating bars could start plain (no blur, not floating) until a video had been played — the blur is now set up on the first drawn frame and survives rotation and resizing
             - Fixed: the watch page layout broke after rotating back from landscape fullscreen — the player sheet state is now saved and restored properly
@@ -118,4 +121,4 @@ jobs:
             - Background playback, popup/PiP player, downloads up to 4K
             - Local subscriptions and history — no Google account needed
 
-            Install: download `Y-SYNC-1.17.0.apk` below and open it on your Android phone.
+            Install: download `Y-SYNC-1.18.0.apk` below and open it on your Android phone.
