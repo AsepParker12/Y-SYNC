@@ -1,7 +1,6 @@
 package org.schabi.newpipe.player;
 
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW;
-import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_DECODING_DECODER_INIT_FAILED;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_DECODING_FAILED;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED;
@@ -1601,7 +1600,6 @@ public final class Player implements PlaybackListener, Listener {
                 reloadPlayQueueManager();
                 break;
             case ERROR_CODE_DECODING_FAILED:
-            case ERROR_CODE_DECODING_DECODER_INIT_FAILED:
                 // Decoder errors are often transient — e.g. every hardware
                 // codec was held by another player — so reload the stream
                 // once, like the timeout group above, instead of shutting
