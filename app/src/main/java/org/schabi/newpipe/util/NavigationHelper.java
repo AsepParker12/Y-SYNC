@@ -70,6 +70,7 @@ import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import org.schabi.newpipe.settings.SettingsActivity;
 import org.schabi.newpipe.shorts.ShortsFragment;
+import org.schabi.newpipe.shorts.ShortsSeed;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
 
 import java.util.List;
@@ -563,6 +564,18 @@ public final class NavigationHelper {
     public static void openShortsFragment(final FragmentManager fragmentManager) {
         defaultTransaction(fragmentManager)
                 .replace(R.id.fragment_holder, ShortsFragment.newInstance())
+                .addToBackStack(null)
+                .commit();
+    }
+
+    /**
+     * Opens the Shorts pager on a seed (e.g. the shorts of a channel's
+     * Shorts tab) instead of the endless feed.
+     */
+    public static void openShortsFragment(final FragmentManager fragmentManager,
+                                          @NonNull final ShortsSeed seed) {
+        defaultTransaction(fragmentManager)
+                .replace(R.id.fragment_holder, ShortsFragment.newInstance(seed))
                 .addToBackStack(null)
                 .commit();
     }

@@ -1,35 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
-<eightbitlab.com.blurview.BlurView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<!-- Y-SYNC: same treatment as the bottom bar — the frame carries the pill
+     geometry (margins, outline/clip — set up in MainActivity) and a solid
+     fallback background, so a momentarily invalid blur frame degrades to a
+     solid pill. The background must NOT sit on the BlurView itself: it
+     would cover the blur. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/top_blur"
+    android:id="@+id/top_blur_frame"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginStart="16dp"
     android:layout_marginEnd="16dp"
-    android:layout_marginTop="10dp">
+    android:layout_marginTop="10dp"
+    android:background="?attr/card_item_background_color">
 
-    <LinearLayout
+    <eightbitlab.com.blurview.BlurView
+        android:id="@+id/top_blur"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:layout_height="wrap_content">
 
-        <androidx.appcompat.widget.Toolbar
-            android:id="@+id/toolbar"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="?attr/actionBarSize"
-            android:background="@android:color/transparent"
-            android:gravity="center_vertical"
-            android:minHeight="?attr/actionBarSize"
-            android:theme="@style/ToolbarTheme">
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
-            <include
-                android:id="@+id/toolbar_search_container"
-                layout="@layout/toolbar_search_layout"
-                android:visibility="gone"
-                tools:visibility="visible" />
+            <androidx.appcompat.widget.Toolbar
+                android:id="@+id/toolbar"
+                android:layout_width="match_parent"
+                android:layout_height="?attr/actionBarSize"
+                android:background="@android:color/transparent"
+                android:gravity="center_vertical"
+                android:minHeight="?attr/actionBarSize"
+                android:theme="@style/ToolbarTheme">
 
-        </androidx.appcompat.widget.Toolbar>
+                <include
+                    android:id="@+id/toolbar_search_container"
+                    layout="@layout/toolbar_search_layout"
+                    android:visibility="gone"
+                    tools:visibility="visible" />
 
-    </LinearLayout>
-</eightbitlab.com.blurview.BlurView>
+            </androidx.appcompat.widget.Toolbar>
+
+        </LinearLayout>
+
+    </eightbitlab.com.blurview.BlurView>
+
+</FrameLayout>

@@ -103,6 +103,11 @@ public final class MainPlayerUi extends VideoPlayerUi implements View.OnLayoutCh
     // fullscreen player
     private ItemTouchHelper itemTouchHelper;
 
+    // Y-SYNC: notified when the player renders a frame (see
+    // VideoDetailFragment's mini player, which only reveals the reparented
+    // video surface once a frame has actually been rendered into it).
+    @Nullable
+    private Runnable firstFrameRenderedListener;
 
     /*//////////////////////////////////////////////////////////////////////////
     // Constructor, setup, destroy
@@ -112,6 +117,23 @@ public final class MainPlayerUi extends VideoPlayerUi implements View.OnLayoutCh
     public MainPlayerUi(@NonNull final Player player,
                         @NonNull final PlayerBinding playerBinding) {
         super(player, playerBinding);
+    }
+
+    /**
+     * Y-SYNC: registers a callback for {@link #onRenderedFirstFrame()},
+     * replacing any previously registered one. Used by the detail fragment
+     * to learn when the video surface has actually rendered a frame.
+     */
+    public void setFirstFrameRenderedListener(@Nullable final Runnable listener) {
+        this.firstFrameRenderedListener = listener;
+    }
+
+    @Override
+    public void onRenderedFirstFrame() {
+        super.onRenderedFirstFrame();
+        if (firstFrameRenderedListener != null) {
+            firstFrameRenderedListener.run();
+        }
     }
 
     /**

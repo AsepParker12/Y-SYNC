@@ -85,6 +85,7 @@ import org.schabi.newpipe.extractor.services.peertube.PeertubeInstance;
 import org.schabi.newpipe.fragments.BackPressable;
 import org.schabi.newpipe.fragments.MainFragment;
 import org.schabi.newpipe.fragments.detail.VideoDetailFragment;
+import org.schabi.newpipe.fragments.list.channel.ChannelFragment;
 import org.schabi.newpipe.local.bookmark.BookmarkFragment;
 import org.schabi.newpipe.local.feed.FeedFragment;
 import org.schabi.newpipe.local.subscription.SubscriptionFragment;
@@ -271,7 +272,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupBottomNav() {
         if (DeviceUtils.isTv(this)) {
-            mainBinding.bottomBlur.setVisibility(View.GONE);
+            // TVs never show the bar: this is a one-time, permanent disable
+            // at setup (not a runtime show/hide flip), so GONE is right here.
+            mainBinding.bottomBlurFrame.setVisibility(View.GONE);
             return;
         }
         mainBinding.bottomNav.setOnItemSelectedListener(this::onBottomNavItemSelected);
@@ -320,7 +323,7 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return;
         }
-        ((BlurView) toolbarLayoutBinding.getRoot())
+        toolbarLayoutBinding.topBlur
                 .setupWith(mainBinding.getRoot(), new RenderEffectBlur())
                 .setFrameClearDrawable(ContextCompat.getDrawable(this,
                         R.drawable.glass_nav_tint))
@@ -329,16 +332,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupTopGlass() {
         // Y-SYNC: the top bar floats like the bottom bar — pill outline.
-        final BlurView topBlur = (BlurView) toolbarLayoutBinding.getRoot();
+        // The outline/clip live on the wrapping frame (which also carries
+        // the solid fallback background), not on the BlurView itself.
+        final BlurView topBlur = toolbarLayoutBinding.topBlur;
+        final View topBarFrame = toolbarLayoutBinding.getRoot();
         final float radiusPx = 32 * getResources().getDisplayMetrics().density;
-        topBlur.setOutlineProvider(new ViewOutlineProvider() {
+        topBarFrame.setOutlineProvider(new ViewOutlineProvider() {
             @Override
             public void getOutline(final View view, final Outline outline) {
                 outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
             }
         });
-        topBlur.setClipToOutline(true);
-        setupTopBlur();
+        topBarFrame.setClipToOutline(true);
+        // Y-SYNC: set the blur up exactly ONCE, deferred until after the
+        // first layout. An immediate second setupWith() (the pre-hotfix
+        // behaviour) destroyed the first blur controller and discarded its
+        // render node, and a setup before layout ran at size 0 — both threw
+        // the bar back into the fragile no-valid-frame window on every
+        // cold start, where this GPU class composites garbage frames.
         topBlur.post(this::setupTopBlur);
         getSupportFragmentManager().registerFragmentLifecycleCallbacks(
                 new FragmentManager.FragmentLifecycleCallbacks() {
@@ -357,31 +368,93 @@ public class MainActivity extends AppCompatActivity {
         // area. The same goes for everything hosted inside the detail page
         // (its tabs, e.g. the comments tab): the sheet covers the top bar
         // when expanded, so an inset would only leave a dead gap there.
+        // The same goes for the pages inside a channel page: they already
+        // start below the channel header, so an inset would only leave a
+        // dead gap in every channel tab.
         if (fragment.getId() == R.id.fragment_player_holder
                 || fragment instanceof VideoDetailFragment
-                || isHostedInPlayerSheet(fragment)) {
+                || isHostedInPlayerSheet(fragment)
+                || isHostedInChannelPage(fragment)) {
+            return;
+        }
+        if (fragment instanceof ChannelFragment) {
+            // The channel page has no single scrolling view to pad: its
+            // header (banner, avatar, name, subscriber count, subscribe
+            // button) lives in the app bar, which starts at the very top
+            // of the screen and would slide under the floating bar. Give
+            // the app bar itself the top inset instead, so the whole
+            // header starts fully below the bar; the tab strip and the
+            // pages below follow the app bar's position.
+            final View appBar = view.findViewById(R.id.app_bar_layout);
+            if (appBar != null) {
+                applyTopGlassInset(appBar, false);
+            }
+            return;
+        }
+        if (fragment instanceof SearchFragment) {
+            // The search screen stacks two lists in one root: the results
+            // list and the suggestions list shown while typing. Both start
+            // at the top of the screen, so both need the inset — without
+            // it, the first suggestion row slides under the floating bar
+            // and its icons peek out at the bar's edges, looking like a
+            // second bar stacked behind it.
+            applyTopGlassInset(view.findViewById(R.id.items_list), true);
+            applyTopGlassInset(view.findViewById(R.id.suggestions_list), true);
             return;
         }
         final View scrollView = findTopScrollView(view);
-        if (scrollView == null || topGlassPaddedViews.containsKey(scrollView)) {
+        if (scrollView == null) {
             return;
         }
+        applyTopGlassInset(scrollView, true);
+    }
+
+    /**
+     * Y-SYNC: adds the floating top bar's height as extra top padding to a
+     * view, exactly once per view instance (views are guarded by
+     * {@link #topGlassPaddedViews}, so recreated views get their own inset
+     * and surviving ones are never padded twice).
+     *
+     * @param clipToPadding for scrolling views: let content scroll through
+     *                      the inset area, behind the glass bar
+     */
+    private void applyTopGlassInset(@Nullable final View target,
+                                    final boolean clipToPadding) {
+        if (target == null || topGlassPaddedViews.containsKey(target)) {
+            return;
+        }
+        target.setPadding(target.getPaddingLeft(),
+                target.getPaddingTop() + topGlassInsetPx(),
+                target.getPaddingRight(), target.getPaddingBottom());
+        if (clipToPadding && target instanceof ViewGroup) {
+            ((ViewGroup) target).setClipToPadding(false);
+        }
+        topGlassPaddedViews.put(target, Boolean.TRUE);
+    }
+
+    private int topGlassInsetPx() {
         final TypedValue typedValue = new TypedValue();
         getTheme().resolveAttribute(android.R.attr.actionBarSize, typedValue, true);
-        final int topInset = TypedValue.complexToDimensionPixelSize(typedValue.data,
+        return TypedValue.complexToDimensionPixelSize(typedValue.data,
                 getResources().getDisplayMetrics())
                 + Math.round(18 * getResources().getDisplayMetrics().density);
-        scrollView.setPadding(scrollView.getPaddingLeft(),
-                scrollView.getPaddingTop() + topInset,
-                scrollView.getPaddingRight(), scrollView.getPaddingBottom());
-        ((ViewGroup) scrollView).setClipToPadding(false);
-        topGlassPaddedViews.put(scrollView, Boolean.TRUE);
     }
 
     private boolean isHostedInPlayerSheet(final Fragment fragment) {
         Fragment parent = fragment.getParentFragment();
         while (parent != null) {
             if (parent instanceof VideoDetailFragment) {
+                return true;
+            }
+            parent = parent.getParentFragment();
+        }
+        return false;
+    }
+
+    private boolean isHostedInChannelPage(final Fragment fragment) {
+        Fragment parent = fragment.getParentFragment();
+        while (parent != null) {
+            if (parent instanceof ChannelFragment) {
                 return true;
             }
             parent = parent.getParentFragment();
@@ -464,15 +537,20 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return;
         }
+        // Y-SYNC: the pill outline/clip live on the wrapping frame (which
+        // also carries the solid fallback background), not on the BlurView.
         final float radiusPx = 32 * getResources().getDisplayMetrics().density;
-        mainBinding.bottomBlur.setOutlineProvider(new ViewOutlineProvider() {
+        mainBinding.bottomBlurFrame.setOutlineProvider(new ViewOutlineProvider() {
             @Override
             public void getOutline(final View view, final Outline outline) {
                 outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
             }
         });
-        mainBinding.bottomBlur.setClipToOutline(true);
-        setupBottomBlurEffect();
+        mainBinding.bottomBlurFrame.setClipToOutline(true);
+        // Y-SYNC: set the blur up exactly ONCE, deferred until after the
+        // first layout — same reasoning as for the top bar (see
+        // setupTopGlass): a double setupWith() and a size-0 setup kept
+        // throwing the bar into the no-valid-frame window on cold starts.
         mainBinding.bottomBlur.post(this::setupBottomBlurEffect);
     }
 
@@ -605,18 +683,28 @@ public class MainActivity extends AppCompatActivity {
         final boolean fullscreen = playerFragment instanceof VideoDetailFragment
                 && ((VideoDetailFragment) playerFragment).isFullscreen();
         final boolean show = topLevel && !playerExpanded && !fullscreen;
-        mainBinding.bottomBlur.setVisibility(show ? View.VISIBLE : View.GONE);
+        // Y-SYNC: hide with INVISIBLE, never GONE, and only write the
+        // visibility when it actually changes. A GONE/VISIBLE flip changes
+        // the bar's size, which reallocates the blur bitmap and forces the
+        // BlurView's render node to re-record — on this GPU class that
+        // window is exactly where garbage (lime) frames get composited.
+        // INVISIBLE keeps the measured size (and the footprint math below)
+        // perfectly stable.
+        final int barVisibility = show ? View.VISIBLE : View.INVISIBLE;
+        if (mainBinding.bottomBlurFrame.getVisibility() != barVisibility) {
+            mainBinding.bottomBlurFrame.setVisibility(barVisibility);
+        }
         // Y-SYNC: stack the mini player above the floating bar instead of
         // letting it cover the bar — lift the sheet by the bar's footprint
         // plus a visible gap, easing the lift away as the player expands.
         final float density = getResources().getDisplayMetrics().density;
         int barFootprint = Math.round(70 * density);
-        if (mainBinding.bottomBlur.getHeight() > 0
-                && mainBinding.bottomBlur.getLayoutParams()
+        if (mainBinding.bottomBlurFrame.getHeight() > 0
+                && mainBinding.bottomBlurFrame.getLayoutParams()
                         instanceof ViewGroup.MarginLayoutParams) {
-            barFootprint = mainBinding.bottomBlur.getHeight()
+            barFootprint = mainBinding.bottomBlurFrame.getHeight()
                     + ((ViewGroup.MarginLayoutParams)
-                            mainBinding.bottomBlur.getLayoutParams()).bottomMargin;
+                            mainBinding.bottomBlurFrame.getLayoutParams()).bottomMargin;
         }
         final float lift = topLevel && playerPresent
                 ? -(barFootprint + Math.round(10 * density))
@@ -639,6 +727,21 @@ public class MainActivity extends AppCompatActivity {
                     .setChecked(true);
         } else if (current instanceof BookmarkFragment) {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_bookmarks).setChecked(true);
+        }
+        // Y-SYNC: Shorts is full-bleed, like in the YouTube app: hide the
+        // floating top bar entirely while the Shorts feed is showing (as a
+        // solid black pill it just covered the video) and restore it on
+        // every other screen. Back navigation keeps working via the
+        // system back button/gesture. INVISIBLE (not GONE) keeps the
+        // bar's size stable, so showing it again does not resize the bar
+        // or disturb its blur.
+        if (toolbarLayoutBinding != null) {
+            final View topBar = toolbarLayoutBinding.getRoot();
+            final int topBarVisibility = current instanceof ShortsFragment
+                    ? View.INVISIBLE : View.VISIBLE;
+            if (topBar.getVisibility() != topBarVisibility) {
+                topBar.setVisibility(topBarVisibility);
+            }
         }
         updateTopBarStyle(false);
     }

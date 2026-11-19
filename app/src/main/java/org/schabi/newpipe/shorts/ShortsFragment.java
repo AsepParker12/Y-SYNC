@@ -72,6 +72,9 @@ public final class ShortsFragment extends BaseFragment {
     private static final int PREFETCH_AHEAD = 5;
     private static final int LOAD_MORE_THRESHOLD = 4;
     private static final int YOUTUBE_SERVICE_ID = 0;
+    // Fragment argument marking that this instance was opened on a seed
+    // (see ShortsSeed) rather than on the endless feed.
+    private static final String ARG_SEEDED = "seeded";
 
     private final List<ShortsItem> items = new ArrayList<>();
     private final Set<String> seenVideoIds = new HashSet<>();
@@ -99,8 +102,31 @@ public final class ShortsFragment extends BaseFragment {
     private boolean mainPlayerPausedByUs;
     private boolean openedInFullPlayer;
 
+    // Seeded mode (opened from a channel's Shorts tab): the pager starts
+    // on the seed's items and pages more through the seed's loader instead
+    // of the InnerTube feed client.
+    private boolean seededMode;
+    @Nullable
+    private ShortsSeed.PageLoader seedPageLoader;
+    private boolean seedExhausted;
+
     public static ShortsFragment newInstance() {
         return new ShortsFragment();
+    }
+
+    /**
+     * Opens the pager on a seed (e.g. a channel's Shorts tab): the tapped
+     * short is shown first, swiping continues through the seeded list, and
+     * more items are paged through the seed's loader. The seed itself is
+     * handed over through {@link ShortsSeed}'s one-shot slot.
+     */
+    public static ShortsFragment newInstance(@NonNull final ShortsSeed seed) {
+        ShortsSeed.setPending(seed);
+        final ShortsFragment fragment = new ShortsFragment();
+        final Bundle args = new Bundle();
+        args.putBoolean(ARG_SEEDED, true);
+        fragment.setArguments(args);
+        return fragment;
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -149,11 +175,38 @@ public final class ShortsFragment extends BaseFragment {
             PlayerHolder.getInstance().pausePlayer();
             mainPlayerPausedByUs = true;
         }
-        if (items.isEmpty()) {
-            loadFirstPage();
-        } else {
+        if (!items.isEmpty()) {
             binding.shortsLoading.setVisibility(View.GONE);
+        } else if (!startFromSeed()) {
+            loadFirstPage();
         }
+    }
+
+    /**
+     * Starts the pager on the pending {@link ShortsSeed}, if this instance
+     * was opened with one. Returns {@code false} when there is no usable
+     * seed (not a seeded instance, or the seed is gone — e.g. the process
+     * died and only the argument survived), in which case the caller falls
+     * back to the normal feed.
+     */
+    private boolean startFromSeed() {
+        if (getArguments() == null || !getArguments().getBoolean(ARG_SEEDED, false)) {
+            return false;
+        }
+        final ShortsSeed seed = ShortsSeed.takePending();
+        if (seed == null || seed.getItems().isEmpty()) {
+            return false;
+        }
+        seededMode = true;
+        seedPageLoader = seed.getPageLoader();
+        seedExhausted = seedPageLoader == null;
+        appendItems(seed.getItems());
+        binding.shortsLoading.setVisibility(View.GONE);
+        currentPosition = Math.min(Math.max(seed.getStartIndex(), 0), items.size() - 1);
+        binding.shortsPager.setCurrentItem(currentPosition, false);
+        syncPlayerPool();
+        prefetchAhead();
+        return true;
     }
 
     @Override
@@ -238,6 +291,10 @@ public final class ShortsFragment extends BaseFragment {
     }
 
     private void loadMore() {
+        if (seededMode) {
+            loadMoreSeed();
+            return;
+        }
         if (loadingFeed || items.isEmpty()) {
             return;
         }
@@ -270,6 +327,38 @@ public final class ShortsFragment extends BaseFragment {
                         continuationToken = null;
                         loadMore();
                     }
+                }));
+    }
+
+    /**
+     * Pages more items in seeded mode, through the seed's loader (the
+     * channel tab's extractor paging). An empty page — or any error — ends
+     * the seeded list: the pager simply stops growing there.
+     */
+    private void loadMoreSeed() {
+        if (loadingFeed || items.isEmpty() || seedExhausted || seedPageLoader == null) {
+            return;
+        }
+        loadingFeed = true;
+        disposables.add(seedPageLoader.loadNextPage()
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(newItems -> {
+                    loadingFeed = false;
+                    // No binding check on purpose: appendItems only touches
+                    // the item list and the adapter, and the loader has
+                    // already advanced its paging state — dropping the page
+                    // here (e.g. while the view is recreated) would skip
+                    // those shorts for good.
+                    if (newItems.isEmpty()) {
+                        seedExhausted = true;
+                    } else {
+                        appendItems(newItems);
+                    }
+                }, throwable -> {
+                    loadingFeed = false;
+                    seedExhausted = true;
+                    Log.e(TAG, "Could not load more seeded Shorts", throwable);
                 }));
     }
 

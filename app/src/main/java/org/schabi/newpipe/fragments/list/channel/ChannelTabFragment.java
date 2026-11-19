@@ -16,7 +16,10 @@ import org.schabi.newpipe.databinding.PlaylistControlBinding;
 import org.schabi.newpipe.error.UserAction;
 import org.schabi.newpipe.extractor.InfoItem;
 import org.schabi.newpipe.extractor.ListExtractor;
+import org.schabi.newpipe.extractor.NewPipe;
+import org.schabi.newpipe.extractor.Page;
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo;
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs;
 import org.schabi.newpipe.extractor.exceptions.ParsingException;
 import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler;
 import org.schabi.newpipe.extractor.linkhandler.ListLinkHandlerFactory;
@@ -26,10 +29,16 @@ import org.schabi.newpipe.fragments.list.BaseListInfoFragment;
 import org.schabi.newpipe.fragments.list.playlist.PlaylistControlViewHolder;
 import org.schabi.newpipe.player.playqueue.ChannelTabPlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
+import org.schabi.newpipe.shorts.ShortsItem;
+import org.schabi.newpipe.shorts.ShortsSeed;
 import org.schabi.newpipe.util.ChannelTabHelper;
 import org.schabi.newpipe.util.ExtractorHelper;
+import org.schabi.newpipe.util.NavigationHelper;
+import org.schabi.newpipe.util.OnClickGesture;
 import org.schabi.newpipe.util.PlayButtonHelper;
+import org.schabi.newpipe.util.image.ImageStrategy;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -187,6 +196,134 @@ public class ChannelTabFragment extends BaseListInfoFragment<InfoItem, ChannelTa
 
             PlayButtonHelper.initPlaylistControlClickListener(
                     activity, playlistControlBinding, this);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
+    // Y-SYNC: channel Shorts open in the swipe feed
+    //////////////////////////////////////////////////////////////////////////*/
+
+    @Override
+    protected void initListeners() {
+        super.initListeners();
+        if (!isShortsTab()) {
+            return;
+        }
+        // On a channel's Shorts tab, tapping a short opens the swipeable
+        // Shorts pager (seeded with this tab's items) instead of the
+        // normal watch page. Everywhere else — and on every other tab —
+        // the stock behaviour installed by super stays in place.
+        // Long-press keeps the standard info dialog.
+        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<>() {
+            @Override
+            public void selected(final StreamInfoItem selectedItem) {
+                openShortInFeed(selectedItem);
+            }
+
+            @Override
+            public void held(final StreamInfoItem selectedItem) {
+                showInfoItemDialog(selectedItem);
+            }
+        });
+    }
+
+    private boolean isShortsTab() {
+        return tabHandler != null && !tabHandler.getContentFilters().isEmpty()
+                && ChannelTabs.SHORTS.equals(tabHandler.getContentFilters().get(0));
+    }
+
+    /**
+     * Opens the Shorts pager seeded with this tab's already loaded items,
+     * starting at the tapped one; further pages come from the tab's
+     * extractor paging (see {@link #createShortsPageLoader()}). Falls back
+     * to the normal watch page when no seed could be built.
+     */
+    private void openShortInFeed(final StreamInfoItem selectedItem) {
+        onItemSelected(selectedItem);
+        final List<ShortsItem> seedItems = new ArrayList<>();
+        int startIndex = -1;
+        for (final InfoItem item : infoListAdapter.getItemsList()) {
+            if (!(item instanceof StreamInfoItem)) {
+                continue;
+            }
+            final ShortsItem shortsItem = toShortsItem((StreamInfoItem) item);
+            if (shortsItem == null) {
+                continue;
+            }
+            if (item == selectedItem || item.getUrl().equals(selectedItem.getUrl())) {
+                startIndex = seedItems.size();
+            }
+            seedItems.add(shortsItem);
+        }
+        if (startIndex < 0) {
+            NavigationHelper.openVideoDetailFragment(requireContext(), getFM(),
+                    selectedItem.getServiceId(), selectedItem.getUrl(),
+                    selectedItem.getName(), null, false);
+            return;
+        }
+        NavigationHelper.openShortsFragment(getFM(),
+                new ShortsSeed(seedItems, startIndex, createShortsPageLoader()));
+    }
+
+    /**
+     * Pages the tab's next extractor page for the seeded Shorts pager. The
+     * paging state is captured at creation time — by then the tab's first
+     * page has been loaded and the lightweight tab handler swapped in — so
+     * the loader keeps working after this fragment's view is gone.
+     */
+    @NonNull
+    private ShortsSeed.PageLoader createShortsPageLoader() {
+        final int loaderServiceId = serviceId;
+        final ListLinkHandler loaderHandler = tabHandler;
+        return new ShortsSeed.PageLoader() {
+            @Nullable
+            private Page nextPage = currentNextPage;
+
+            @NonNull
+            @Override
+            public Single<List<ShortsItem>> loadNextPage() {
+                if (!Page.isValid(nextPage)) {
+                    return Single.just(new ArrayList<>());
+                }
+                return ExtractorHelper.getMoreChannelTabItems(loaderServiceId,
+                                loaderHandler, nextPage)
+                        .map(page -> {
+                            nextPage = page.getNextPage();
+                            return toShortsItems(page.getItems());
+                        });
+            }
+        };
+    }
+
+    @NonNull
+    private static List<ShortsItem> toShortsItems(@NonNull final List<InfoItem> items) {
+        final List<ShortsItem> shortsItems = new ArrayList<>();
+        for (final InfoItem item : items) {
+            if (item instanceof StreamInfoItem) {
+                final ShortsItem shortsItem = toShortsItem((StreamInfoItem) item);
+                if (shortsItem != null) {
+                    shortsItems.add(shortsItem);
+                }
+            }
+        }
+        return shortsItems;
+    }
+
+    @Nullable
+    private static ShortsItem toShortsItem(@NonNull final StreamInfoItem item) {
+        try {
+            final String videoId = NewPipe.getService(item.getServiceId())
+                    .getStreamLHFactory().getId(item.getUrl());
+            final ShortsItem shortsItem = new ShortsItem(videoId,
+                    ImageStrategy.imageListToDbUrl(item.getThumbnails()));
+            // Title and uploader are re-resolved per short by the pager,
+            // but seeding them keeps the pager's labels filled from the
+            // start.
+            shortsItem.setTitle(item.getName());
+            shortsItem.setUploaderName(item.getUploaderName());
+            return shortsItem;
+        } catch (final ParsingException e) {
+            return null;
         }
     }
 

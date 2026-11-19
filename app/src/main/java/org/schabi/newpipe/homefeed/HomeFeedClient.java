@@ -1,5 +1,7 @@
 package org.schabi.newpipe.homefeed;
 
+import android.util.Log;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -15,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 import okhttp3.OkHttpClient;
@@ -29,10 +32,15 @@ import okhttp3.ResponseBody;
  * <p>The extractor's kiosks no longer include a generic YouTube home page
  * (Trending was removed in July 2025, leaving the Live kiosk as the default),
  * so, like other open-source clients, the home feed is driven directly
- * through the {@code browse} endpoint with {@code browseId}
- * {@code FEwhat_to_watch}: the first response carries a rich grid of
- * {@code videoRenderer} items plus a continuation token, and every following
- * page is another {@code browse} request holding that token. The
+ * through YouTube's web endpoints. The first page is bootstrapped the way
+ * the proven logged-out scrapers do it: the homepage HTML is fetched like a
+ * browser would (desktop user agent, a {@code CONSENT} cookie against the
+ * consent interstitial) and its embedded {@code ytInitialData} is parsed —
+ * a bare {@code browse} request for {@code FEwhat_to_watch} without any
+ * session data comes back unusable on some networks. Only when the HTML
+ * route fails or yields nothing does the client fall back to that bare
+ * {@code browse} request. Every following page is a {@code browse} request
+ * holding the continuation token of the previous one. The
  * {@code visitorData} of the first response is captured and sent along with
  * the continuations, so YouTube keeps the feed session consistent.</p>
  *
@@ -46,10 +54,13 @@ import okhttp3.ResponseBody;
  * are not thread-safe; use one instance per feed.</p>
  */
 public final class HomeFeedClient {
+    private static final String TAG = HomeFeedClient.class.getSimpleName();
+
     // Public API key of the YouTube web client, used by every InnerTube caller.
     private static final String API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
     private static final String CLIENT_VERSION = "2.20251001.01.00";
     private static final String INNERTUBE_BASE_URL = "https://www.youtube.com/youtubei/v1/";
+    private static final String HOME_PAGE_URL = "https://www.youtube.com/";
     private static final String HOME_BROWSE_ID = "FEwhat_to_watch";
 
     @Nullable
@@ -85,13 +96,151 @@ public final class HomeFeedClient {
     /**
      * Fetches the first page of a fresh home feed session, dropping any
      * visitor data captured by earlier calls.
+     *
+     * <p>The primary route scrapes the homepage's {@code ytInitialData}
+     * (see {@link #fetchFirstPageFromHtml()}); the bare {@code browse}
+     * request is only the fallback for when that route throws or yields
+     * no videos. Visitor data captured by the HTML route is kept for the
+     * fallback, so the API request still runs inside the scraped session.
+     * </p>
      */
     @NonNull
     public FeedPage fetchFirstPage() throws IOException {
         visitorData = null;
+        try {
+            final FeedPage page = fetchFirstPageFromHtml();
+            if (!page.getItems().isEmpty()) {
+                return page;
+            }
+        } catch (final IOException e) {
+            // Fall through to the bare API request below.
+            Log.w(TAG, "Homepage scrape failed, using the browse API instead", e);
+        }
         final String body = "{" + contextJson()
                 + ",\"browseId\":\"" + HOME_BROWSE_ID + "\"}";
         return parsePage(postJson("browse", body));
+    }
+
+    /**
+     * Fetches the homepage HTML like a desktop browser and parses the
+     * {@code ytInitialData} embedded in it as the first feed page. The
+     * {@code CONSENT} cookie (in the format youtube-dl sets) keeps the
+     * request from being redirected to the consent interstitial, whose
+     * page carries no feed data.
+     */
+    @NonNull
+    private FeedPage fetchFirstPageFromHtml() throws IOException {
+        final OkHttpClient client = DownloaderImpl.getInstance().getClient();
+        final Request request = new Request.Builder()
+                .url(HOME_PAGE_URL)
+                .get()
+                .addHeader("User-Agent", DownloaderImpl.USER_AGENT)
+                .addHeader("Accept-Language", "id")
+                .addHeader("Cookie", buildConsentCookie())
+                .build();
+        try (Response response = client.newCall(request).execute()) {
+            final ResponseBody responseBody = response.body();
+            if (!response.isSuccessful() || responseBody == null) {
+                throw new IOException("Homepage request failed with HTTP "
+                        + response.code());
+            }
+            final String html = responseBody.string();
+            final FeedPage page = parsePage(extractInitialData(html));
+            if (visitorData == null) {
+                // ytInitialData normally carries the visitor data in its
+                // response context (parsePage captured it); the ytcfg blob
+                // of the page is the backup source.
+                visitorData = extractVisitorData(html);
+            }
+            return page;
+        }
+    }
+
+    /**
+     * Builds the {@code CONSENT} cookie that gets past YouTube's consent
+     * interstitial: the value youtube-dl sets, a "YES" callback stamp with
+     * a random consent id.
+     */
+    @NonNull
+    private static String buildConsentCookie() {
+        final int consentId = 100 + new Random().nextInt(900);
+        return "CONSENT=YES+cb.20210328-17-p0.id+FX+" + consentId;
+    }
+
+    /**
+     * Extracts and parses the {@code ytInitialData} JSON object embedded in
+     * a YouTube page. The object follows {@code var ytInitialData = } in a
+     * script tag; its end is found by scanning for the balancing closing
+     * brace (string contents cannot unbalance the scan), which stays
+     * correct no matter what the page around it looks like.
+     */
+    @NonNull
+    private static JsonObject extractInitialData(@NonNull final String html)
+            throws IOException {
+        final int marker = html.indexOf("ytInitialData");
+        final int start = marker < 0 ? -1 : html.indexOf('{', marker);
+        final int end = start < 0 ? -1 : findJsonObjectEnd(html, start);
+        if (end < 0) {
+            throw new IOException("No ytInitialData found in the homepage response");
+        }
+        try {
+            return JsonParser.object().from(html.substring(start, end + 1));
+        } catch (final JsonParserException e) {
+            throw new IOException("Could not parse the homepage's ytInitialData", e);
+        }
+    }
+
+    /**
+     * Returns the index of the closing brace that balances the opening
+     * brace at {@code start}, or {@code -1} when the object never closes.
+     * Braces inside string literals do not count.
+     */
+    private static int findJsonObjectEnd(@NonNull final String text, final int start) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Reads the visitor data out of the page's ytcfg blob
+     * ({@code "VISITOR_DATA":"..."}), the backup for when
+     * {@code ytInitialData} itself carries none.
+     */
+    @Nullable
+    private static String extractVisitorData(@NonNull final String html) {
+        final String marker = "\"VISITOR_DATA\":\"";
+        final int markerIndex = html.indexOf(marker);
+        if (markerIndex < 0) {
+            return null;
+        }
+        final int valueStart = markerIndex + marker.length();
+        final int valueEnd = html.indexOf('"', valueStart);
+        if (valueEnd <= valueStart) {
+            return null;
+        }
+        return html.substring(valueStart, valueEnd);
     }
 
     /**
@@ -364,7 +513,7 @@ public final class HomeFeedClient {
         final StringBuilder builder = new StringBuilder();
         builder.append("\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"")
                 .append(CLIENT_VERSION)
-                .append("\",\"hl\":\"en\",\"gl\":\"US\"");
+                .append("\",\"hl\":\"id\",\"gl\":\"ID\"");
         if (visitorData != null) {
             builder.append(",\"visitorData\":\"")
                     .append(escapeJson(visitorData))

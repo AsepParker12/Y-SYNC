@@ -2371,6 +2371,13 @@ public final class VideoDetailFragment
     @Nullable
     private ExpandableSurfaceView miniPlayerSurfaceView;
 
+    // Y-SYNC: whether the current stream has rendered at least one frame
+    // since the surface was moved into the mini player. Until then the
+    // mini player keeps showing the thumbnail: a surface whose buffer was
+    // never written (e.g. playback paused before the first frame) shows
+    // up as a flat green sliver on some GPUs.
+    private boolean miniPlayerFrameRendered;
+
     /**
      * Y-SYNC: the collapsed mini player is a floating card — a bounded view
      * (overlay_card) with rounded corners clipped via an outline provider;
@@ -2410,6 +2417,13 @@ public final class VideoDetailFragment
             if (surface.getVisibility() != View.VISIBLE || surface.getParent() == null) {
                 return;
             }
+            // The reparented surface starts out empty: only reveal it
+            // once a frame has actually been rendered into it (see
+            // onMiniPlayerFirstFrameRendered). Until then the thumbnail
+            // stays on screen — an unwritten surface buffer shows up as
+            // a flat green sliver on some GPUs.
+            playerUi.setFirstFrameRenderedListener(this::onMiniPlayerFirstFrameRendered);
+            miniPlayerFrameRendered = false;
             miniPlayerSurfaceIndex = ((ViewGroup) surface.getParent()).indexOfChild(surface);
             miniPlayerSurfaceLayoutParams = surface.getLayoutParams();
             miniPlayerSurfaceView = surface;
@@ -2420,18 +2434,44 @@ public final class VideoDetailFragment
             final int miniHeight = getResources()
                     .getDimensionPixelSize(R.dimen.mini_player_height);
             surface.setHeights(miniHeight, miniHeight);
-            binding.overlayVideoContainer.setVisibility(View.VISIBLE);
-            binding.overlayThumbnail.setVisibility(View.GONE);
-            // The video box (16:9 of the card height) is wider than the
-            // thumbnail it replaces: shift the metadata right by the surplus.
-            final RelativeLayout.LayoutParams metadataParams =
-                    (RelativeLayout.LayoutParams) binding.overlayMetadataLayout
-                            .getLayoutParams();
-            metadataParams.setMarginStart(Math.round(miniHeight * 16f / 9f)
-                    - binding.overlayThumbnail.getLayoutParams().width);
-            binding.overlayMetadataLayout.setLayoutParams(metadataParams);
             surfaceInMiniPlayer = true;
         });
+    }
+
+    /**
+     * Y-SYNC: called by the main player UI when the player renders a
+     * frame. If the video surface currently sits in the mini player, this
+     * is the moment it may replace the thumbnail.
+     */
+    private void onMiniPlayerFirstFrameRendered() {
+        miniPlayerFrameRendered = true;
+        if (surfaceInMiniPlayer) {
+            revealMiniPlayerSurface();
+        }
+    }
+
+    /**
+     * Y-SYNC: swaps the mini player's thumbnail for the live video surface
+     * (which was reparented into the — still hidden — video container by
+     * {@link #attachSurfaceToMiniPlayer()}) and shifts the metadata right
+     * to make room for the wider video box.
+     */
+    private void revealMiniPlayerSurface() {
+        if (!surfaceInMiniPlayer || binding == null) {
+            return;
+        }
+        binding.overlayVideoContainer.setVisibility(View.VISIBLE);
+        binding.overlayThumbnail.setVisibility(View.GONE);
+        // The video box (16:9 of the card height) is wider than the
+        // thumbnail it replaces: shift the metadata right by the surplus.
+        final int miniHeight = getResources()
+                .getDimensionPixelSize(R.dimen.mini_player_height);
+        final RelativeLayout.LayoutParams metadataParams =
+                (RelativeLayout.LayoutParams) binding.overlayMetadataLayout
+                        .getLayoutParams();
+        metadataParams.setMarginStart(Math.round(miniHeight * 16f / 9f)
+                - binding.overlayThumbnail.getLayoutParams().width);
+        binding.overlayMetadataLayout.setLayoutParams(metadataParams);
     }
 
     /**
@@ -2440,6 +2480,11 @@ public final class VideoDetailFragment
      * player look. Counterpart of {@link #attachSurfaceToMiniPlayer()}.
      */
     private void detachSurfaceFromMiniPlayer() {
+        if (isPlayerAvailable()) {
+            player.UIs().get(MainPlayerUi.class).ifPresent(playerUi ->
+                    playerUi.setFirstFrameRenderedListener(null));
+        }
+        miniPlayerFrameRendered = false;
         if (!surfaceInMiniPlayer) {
             return;
         }
