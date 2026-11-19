@@ -69,6 +69,7 @@ import org.schabi.newpipe.player.helper.PlayerHolder;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import org.schabi.newpipe.settings.SettingsActivity;
+import org.schabi.newpipe.shorts.ShortsFragment;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
 
 import java.util.List;
@@ -555,6 +556,13 @@ public final class NavigationHelper {
                                             @NonNull final String name) {
         defaultTransaction(fragmentManager)
                 .replace(R.id.fragment_holder, PlaylistFragment.getInstance(serviceId, url, name))
+                .addToBackStack(null)
+                .commit();
+    }
+
+    public static void openShortsFragment(final FragmentManager fragmentManager) {
+        defaultTransaction(fragmentManager)
+                .replace(R.id.fragment_holder, ShortsFragment.newInstance())
                 .addToBackStack(null)
                 .commit();
     }

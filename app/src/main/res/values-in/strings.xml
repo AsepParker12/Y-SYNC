@@ -818,4 +818,7 @@
     <string name="lock_hint">Kode akses</string>
     <string name="lock_button">Masuk</string>
     <string name="lock_error">Kode salah, coba lagi</string>
+    <string name="shorts_title">Shorts</string>
+    <string name="shorts_open_in_player">Buka di pemutar</string>
+    <string name="shorts_error_loading_feed">Gagal memuat Shorts</string>
 </resources>

@@ -28,6 +28,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Outline;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -55,6 +56,7 @@ import androidx.appcompat.app.ActionBarDrawerToggle;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.drawable.DrawableCompat;
 import androidx.core.view.GravityCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.core.widget.NestedScrollView;
@@ -96,6 +98,7 @@ import org.schabi.newpipe.player.helper.PlayerHolder;
 import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.settings.UpdateSettingsFragment;
 import org.schabi.newpipe.settings.migration.MigrationManager;
+import org.schabi.newpipe.shorts.ShortsFragment;
 import org.schabi.newpipe.util.Constants;
 import org.schabi.newpipe.util.DeviceUtils;
 import org.schabi.newpipe.util.KioskTranslator;
@@ -139,6 +142,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int ITEM_ID_BOOKMARKS = -3;
     private static final int ITEM_ID_DOWNLOADS = -4;
     private static final int ITEM_ID_HISTORY = -5;
+    private static final int ITEM_ID_SHORTS = -6;
     private static final int ITEM_ID_SETTINGS = 0;
     private static final int ITEM_ID_DONATION = 1;
     private static final int ITEM_ID_ABOUT = 2;
@@ -349,9 +353,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyTopGlassPadding(final Fragment fragment, final View view) {
-        // The player sheet and the video detail page manage their own top area.
+        // The player sheet and the video detail page manage their own top
+        // area. The same goes for everything hosted inside the detail page
+        // (its tabs, e.g. the comments tab): the sheet covers the top bar
+        // when expanded, so an inset would only leave a dead gap there.
         if (fragment.getId() == R.id.fragment_player_holder
-                || fragment instanceof VideoDetailFragment) {
+                || fragment instanceof VideoDetailFragment
+                || isHostedInPlayerSheet(fragment)) {
             return;
         }
         final View scrollView = findTopScrollView(view);
@@ -368,6 +376,17 @@ public class MainActivity extends AppCompatActivity {
                 scrollView.getPaddingRight(), scrollView.getPaddingBottom());
         ((ViewGroup) scrollView).setClipToPadding(false);
         topGlassPaddedViews.put(scrollView, Boolean.TRUE);
+    }
+
+    private boolean isHostedInPlayerSheet(final Fragment fragment) {
+        Fragment parent = fragment.getParentFragment();
+        while (parent != null) {
+            if (parent instanceof VideoDetailFragment) {
+                return true;
+            }
+            parent = parent.getParentFragment();
+        }
+        return false;
     }
 
     private View findTopScrollView(final View view) {
@@ -388,6 +407,57 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         return null;
+    }
+
+    // Y-SYNC: whether the top bar currently shows its solid (non-glass) style.
+    private boolean topBarSolid;
+
+    /**
+     * Y-SYNC: on the comment replies screen the floating glass pill looks
+     * broken: its near-white tint washes out the (always light) toolbar
+     * title and back arrow over the dark comment list. Give the bar a solid
+     * theme background there instead — the comments list already gets a top
+     * inset from applyTopGlassPadding, so the first comment stays fully
+     * visible below the bar. Everywhere else the glass look is restored.
+     *
+     * @param force re-apply even if the style did not change (the action bar
+     *              may have recreated the navigation icon in the meantime)
+     */
+    private void updateTopBarStyle(final boolean force) {
+        if (toolbarLayoutBinding == null) {
+            return;
+        }
+        final Fragment current = getSupportFragmentManager()
+                .findFragmentById(R.id.fragment_holder);
+        final boolean solid = current instanceof CommentRepliesFragment;
+        if (!force && solid == topBarSolid) {
+            return;
+        }
+        topBarSolid = solid;
+        final View toolbarContainer = (View) toolbarLayoutBinding.toolbar.getParent();
+        if (solid) {
+            toolbarContainer.setBackgroundColor(
+                    ThemeHelper.resolveColorFromAttr(this, R.attr.windowBackground));
+            final int textColor = ThemeHelper.resolveColorFromAttr(this,
+                    android.R.attr.textColorPrimary);
+            toolbarLayoutBinding.toolbar.setTitleTextColor(textColor);
+            setToolbarNavigationIconTint(textColor);
+        } else {
+            toolbarContainer.setBackground(null);
+            final int textColor = ThemeHelper.resolveColorFromAttr(this, R.attr.actionColor);
+            toolbarLayoutBinding.toolbar.setTitleTextColor(textColor);
+            setToolbarNavigationIconTint(textColor);
+        }
+    }
+
+    private void setToolbarNavigationIconTint(final int color) {
+        final Drawable icon = toolbarLayoutBinding.toolbar.getNavigationIcon();
+        if (icon == null) {
+            return;
+        }
+        final Drawable tinted = DrawableCompat.wrap(icon).mutate();
+        DrawableCompat.setTint(tinted, color);
+        toolbarLayoutBinding.toolbar.setNavigationIcon(tinted);
     }
 
     private void setupBottomBlur() {
@@ -468,6 +538,10 @@ public class MainActivity extends AppCompatActivity {
     // because the sheet starts out COLLAPSED with peekHeight 0 (no player).
     private float playerSlideOffset = -1f;
 
+    // Y-SYNC: true while the player sheet's peek height is temporarily set
+    // to 0 because the Shorts feed is showing (see updateBottomNavVisibility).
+    private boolean shortsSheetSuppressed;
+
     private static float sheetOffsetForState(final int state) {
         if (state == BottomSheetBehavior.STATE_EXPANDED
                 || state == BottomSheetBehavior.STATE_HALF_EXPANDED) {
@@ -502,6 +576,26 @@ public class MainActivity extends AppCompatActivity {
                 && (getSupportFragmentManager()
                         .findFragmentById(R.id.fragment_player_holder) != null
                         || behavior.getPeekHeight() > 0);
+        // Y-SYNC: while the Shorts feed is showing, the mini player strip
+        // must not overlay its bottom. STATE_HIDDEN cannot be used for
+        // this: VideoDetailFragment treats it as "close the player" and
+        // stops the playback service. Collapsing with a zero peek height
+        // takes the sheet fully off-screen while keeping the (paused)
+        // player session alive; the normal peek height is restored as
+        // soon as Shorts is left.
+        if (current instanceof ShortsFragment) {
+            if (playerPresent && sheetState == BottomSheetBehavior.STATE_COLLAPSED
+                    && behavior.getPeekHeight() != 0) {
+                behavior.setPeekHeight(0);
+                shortsSheetSuppressed = true;
+            }
+        } else if (shortsSheetSuppressed) {
+            shortsSheetSuppressed = false;
+            if (playerPresent && sheetState == BottomSheetBehavior.STATE_COLLAPSED) {
+                behavior.setPeekHeight(getResources()
+                        .getDimensionPixelSize(R.dimen.mini_player_height));
+            }
+        }
         final boolean playerExpanded = playerPresent && playerSlideOffset > 0f;
         final boolean miniPlayer = playerPresent && !playerExpanded;
         // Fullscreen playback never shows the bar — checked explicitly,
@@ -512,9 +606,9 @@ public class MainActivity extends AppCompatActivity {
                 && ((VideoDetailFragment) playerFragment).isFullscreen();
         final boolean show = topLevel && !playerExpanded && !fullscreen;
         mainBinding.bottomBlur.setVisibility(show ? View.VISIBLE : View.GONE);
-        // Y-SYNC: stack the mini player directly above the floating bar instead
-        // of letting it cover the bar — lift the sheet by the bar's footprint,
-        // easing the lift away as the player expands.
+        // Y-SYNC: stack the mini player above the floating bar instead of
+        // letting it cover the bar — lift the sheet by the bar's footprint
+        // plus a visible gap, easing the lift away as the player expands.
         final float density = getResources().getDisplayMetrics().density;
         int barFootprint = Math.round(70 * density);
         if (mainBinding.bottomBlur.getHeight() > 0
@@ -525,7 +619,8 @@ public class MainActivity extends AppCompatActivity {
                             mainBinding.bottomBlur.getLayoutParams()).bottomMargin;
         }
         final float lift = topLevel && playerPresent
-                ? -barFootprint * (1f - Math.max(playerSlideOffset, 0f)) : 0f;
+                ? -(barFootprint + Math.round(10 * density))
+                        * (1f - Math.max(playerSlideOffset, 0f)) : 0f;
         mainBinding.fragmentPlayerHolder.setTranslationY(lift);
         int bottomPadding = 0;
         if (show) {
@@ -545,6 +640,7 @@ public class MainActivity extends AppCompatActivity {
         } else if (current instanceof BookmarkFragment) {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_bookmarks).setChecked(true);
         }
+        updateTopBarStyle(false);
     }
 
     private void setupDrawer() throws ExtractionException {
@@ -600,6 +696,13 @@ public class MainActivity extends AppCompatActivity {
         drawerLayoutBinding.navigation.getMenu()
                 .add(R.id.menu_tabs_group, ITEM_ID_HISTORY, ORDER, R.string.action_history)
                 .setIcon(R.drawable.ic_history);
+        // Y-SYNC: Shorts feed (YouTube only), in the drawer so the 5-tab
+        // bottom bar stays untouched.
+        if (ServiceHelper.getSelectedServiceId(this) == 0) {
+            drawerLayoutBinding.navigation.getMenu()
+                    .add(R.id.menu_tabs_group, ITEM_ID_SHORTS, ORDER, R.string.shorts_title)
+                    .setIcon(R.drawable.ic_smart_display);
+        }
 
         //Kiosks
         final int currentServiceId = ServiceHelper.getSelectedServiceId(this);
@@ -679,6 +782,9 @@ public class MainActivity extends AppCompatActivity {
                 break;
             case ITEM_ID_HISTORY:
                 NavigationHelper.openStatisticFragment(getSupportFragmentManager());
+                break;
+            case ITEM_ID_SHORTS:
+                NavigationHelper.openShortsFragment(getSupportFragmentManager());
                 break;
         }
     }
@@ -1057,6 +1163,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         updateDrawerNavigation();
+        // The action bar may have recreated the navigation icon above:
+        // re-apply the top bar style (e.g. the solid comments bar).
+        updateTopBarStyle(true);
 
         return true;
     }

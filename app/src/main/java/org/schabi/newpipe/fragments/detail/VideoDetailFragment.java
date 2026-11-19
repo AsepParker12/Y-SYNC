@@ -33,6 +33,7 @@ import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.graphics.Outline;
@@ -121,6 +122,7 @@ import org.schabi.newpipe.util.ThemeHelper;
 import org.schabi.newpipe.util.external_communication.KoreUtils;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
 import org.schabi.newpipe.util.image.CoilHelper;
+import org.schabi.newpipe.views.ExpandableSurfaceView;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -436,6 +438,10 @@ public final class VideoDetailFragment
 
     @Override
     public void onDestroyView() {
+        // Y-SYNC: never leave the video surface behind in the mini player
+        // card: the player UI outlives this view (e.g. on rotation) and
+        // would lose its surface view with the destroyed hierarchy.
+        detachSurfaceFromMiniPlayer();
         super.onDestroyView();
         binding = null;
     }
@@ -526,6 +532,7 @@ public final class VideoDetailFragment
         final View.OnClickListener overlayListener = v -> bottomSheetBehavior
                 .setState(BottomSheetBehavior.STATE_EXPANDED);
         binding.overlayThumbnail.setOnClickListener(overlayListener);
+        binding.overlayVideoContainer.setOnClickListener(overlayListener);
         binding.overlayMetadataLayout.setOnClickListener(overlayListener);
         binding.overlayButtonsLayout.setOnClickListener(overlayListener);
         binding.overlayCloseButton.setOnClickListener(v -> bottomSheetBehavior
@@ -577,6 +584,7 @@ public final class VideoDetailFragment
         final View.OnLongClickListener overlayListener = makeOnLongClickListener(info ->
                 openChannel(info.getUploaderUrl(), info.getUploaderName()));
         binding.overlayThumbnail.setOnLongClickListener(overlayListener);
+        binding.overlayVideoContainer.setOnLongClickListener(overlayListener);
         binding.overlayMetadataLayout.setOnLongClickListener(overlayListener);
     }
 
@@ -1308,6 +1316,10 @@ public final class VideoDetailFragment
                         binding.playerPlaceholder.addView(playerUi.getBinding().getRoot());
                     }
                     playerUi.setupVideoSurfaceIfNeeded();
+                    // Y-SYNC: if the sheet is collapsed, the surface belongs
+                    // in the mini player card; if a new stream has no visible
+                    // surface, the mini player falls back to the thumbnail.
+                    syncMiniPlayerSurface();
                 }
             });
         });
@@ -2348,21 +2360,171 @@ public final class VideoDetailFragment
     // interpolated in setOverlayLook while the sheet slides.
     private float miniCardRadiusPx;
 
+    // Y-SYNC: while the sheet is collapsed, the player's live video surface
+    // is reparented into the mini player card (see attachSurfaceToMiniPlayer).
+    // These fields remember where it belongs in the player UI so it can be
+    // put back exactly (same parent, same index, same layout params).
+    private boolean surfaceInMiniPlayer;
+    private int miniPlayerSurfaceIndex = -1;
+    @Nullable
+    private ViewGroup.LayoutParams miniPlayerSurfaceLayoutParams;
+    @Nullable
+    private ExpandableSurfaceView miniPlayerSurfaceView;
+
     /**
-     * Y-SYNC: the collapsed mini player becomes a floating card — rounded
-     * corners clipped via an outline provider; margins, radius and shadow
-     * are interpolated in setOverlayLook (full float when collapsed, flush
-     * full-width when expanded).
+     * Y-SYNC: the collapsed mini player is a floating card — a bounded view
+     * (overlay_card) with rounded corners clipped via an outline provider;
+     * margins, radius and shadow are interpolated in setOverlayLook (full
+     * float when collapsed, flush full-width when expanded).
      */
     private void setupMiniPlayerCard() {
-        binding.overlayLayout.setClipToOutline(true);
-        binding.overlayLayout.setOutlineProvider(new ViewOutlineProvider() {
+        binding.overlayCard.setClipToOutline(true);
+        binding.overlayCard.setOutlineProvider(new ViewOutlineProvider() {
             @Override
             public void getOutline(final View view, final Outline outline) {
                 outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
                         miniCardRadiusPx);
             }
         });
+    }
+
+    /**
+     * Y-SYNC: moves the player's live video surface into the mini player
+     * card, so the collapsed player shows the actually playing video (like
+     * YouTube's mini player) instead of a static thumbnail.
+     *
+     * <p>Only the {@link ExpandableSurfaceView} changes parent: the player,
+     * its playback state and its position are untouched. The surface's own
+     * {@code SurfaceHolderCallback} (registered by the player UI) handles
+     * the move — the old surface is destroyed, the player briefly switches
+     * to a placeholder surface and then renders into the new surface, so
+     * playback never restarts. Streams without a visible surface (e.g.
+     * audio-only) keep the thumbnail.</p>
+     */
+    private void attachSurfaceToMiniPlayer() {
+        if (surfaceInMiniPlayer || !isPlayerAvailable() || binding == null) {
+            return;
+        }
+        player.UIs().get(MainPlayerUi.class).ifPresent(playerUi -> {
+            final ExpandableSurfaceView surface = playerUi.getBinding().surfaceView;
+            if (surface.getVisibility() != View.VISIBLE || surface.getParent() == null) {
+                return;
+            }
+            miniPlayerSurfaceIndex = ((ViewGroup) surface.getParent()).indexOfChild(surface);
+            miniPlayerSurfaceLayoutParams = surface.getLayoutParams();
+            miniPlayerSurfaceView = surface;
+            ((ViewGroup) surface.getParent()).removeView(surface);
+            binding.overlayVideoContainer.addView(surface, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+            final int miniHeight = getResources()
+                    .getDimensionPixelSize(R.dimen.mini_player_height);
+            surface.setHeights(miniHeight, miniHeight);
+            binding.overlayVideoContainer.setVisibility(View.VISIBLE);
+            binding.overlayThumbnail.setVisibility(View.GONE);
+            // The video box (16:9 of the card height) is wider than the
+            // thumbnail it replaces: shift the metadata right by the surplus.
+            final RelativeLayout.LayoutParams metadataParams =
+                    (RelativeLayout.LayoutParams) binding.overlayMetadataLayout
+                            .getLayoutParams();
+            metadataParams.setMarginStart(Math.round(miniHeight * 16f / 9f)
+                    - binding.overlayThumbnail.getLayoutParams().width);
+            binding.overlayMetadataLayout.setLayoutParams(metadataParams);
+            surfaceInMiniPlayer = true;
+        });
+    }
+
+    /**
+     * Y-SYNC: puts the video surface back into the player UI, at the exact
+     * position it was taken from, and restores the thumbnail-based mini
+     * player look. Counterpart of {@link #attachSurfaceToMiniPlayer()}.
+     */
+    private void detachSurfaceFromMiniPlayer() {
+        if (!surfaceInMiniPlayer) {
+            return;
+        }
+        surfaceInMiniPlayer = false;
+        miniPlayerSurfaceView = null;
+        if (!isPlayerAvailable() || binding == null) {
+            return;
+        }
+        player.UIs().get(MainPlayerUi.class).ifPresent(playerUi -> {
+            final ExpandableSurfaceView surface = playerUi.getBinding().surfaceView;
+            if (surface.getParent() == binding.overlayVideoContainer) {
+                binding.overlayVideoContainer.removeView(surface);
+                final ViewGroup playerRoot = playerUi.getBinding().getRoot();
+                final int index = miniPlayerSurfaceIndex < 0 ? 0
+                        : Math.min(miniPlayerSurfaceIndex, playerRoot.getChildCount());
+                playerRoot.addView(surface, index, miniPlayerSurfaceLayoutParams);
+            }
+            binding.overlayVideoContainer.setVisibility(View.GONE);
+            binding.overlayThumbnail.setVisibility(View.VISIBLE);
+            final RelativeLayout.LayoutParams metadataParams =
+                    (RelativeLayout.LayoutParams) binding.overlayMetadataLayout
+                            .getLayoutParams();
+            metadataParams.setMarginStart(0);
+            binding.overlayMetadataLayout.setLayoutParams(metadataParams);
+            if (getView() != null) {
+                // Restore the surface sizing of the full player.
+                setHeightThumbnail();
+            }
+        });
+    }
+
+    /**
+     * Y-SYNC: keeps the video surface in the place matching the current
+     * sheet state: inside the mini player card while collapsed, inside the
+     * player UI otherwise. Called whenever the player view is (re)added, so
+     * a stream change while collapsed (e.g. an audio-only next video) swaps
+     * between live video and thumbnail correctly.
+     */
+    private void syncMiniPlayerSurface() {
+        if (binding == null) {
+            return;
+        }
+        if (surfaceInMiniPlayer) {
+            // The player UI may have been recreated in the meantime (e.g.
+            // when switching from the popup player): then the surface kept
+            // in the mini player belongs to a dead UI. Drop the stale
+            // bookkeeping and clean the container, so the live surface can
+            // be attached below.
+            final boolean stale = !isPlayerAvailable()
+                    || player.UIs().get(MainPlayerUi.class)
+                            .map(playerUi -> playerUi.getBinding().surfaceView
+                                            != miniPlayerSurfaceView
+                                    || miniPlayerSurfaceView == null
+                                    || miniPlayerSurfaceView.getParent()
+                                            != binding.overlayVideoContainer)
+                            .orElse(true);
+            if (stale) {
+                surfaceInMiniPlayer = false;
+                miniPlayerSurfaceView = null;
+                miniPlayerSurfaceLayoutParams = null;
+                miniPlayerSurfaceIndex = -1;
+                binding.overlayVideoContainer.removeAllViews();
+                binding.overlayVideoContainer.setVisibility(View.GONE);
+                binding.overlayThumbnail.setVisibility(View.VISIBLE);
+                final RelativeLayout.LayoutParams metadataParams =
+                        (RelativeLayout.LayoutParams) binding.overlayMetadataLayout
+                                .getLayoutParams();
+                metadataParams.setMarginStart(0);
+                binding.overlayMetadataLayout.setLayoutParams(metadataParams);
+            }
+        }
+        if (bottomSheetState == BottomSheetBehavior.STATE_COLLAPSED) {
+            if (surfaceInMiniPlayer) {
+                // Re-check: the surface may have been hidden for the new stream.
+                player.UIs().get(MainPlayerUi.class).ifPresent(playerUi -> {
+                    if (playerUi.getBinding().surfaceView.getVisibility() != View.VISIBLE) {
+                        detachSurfaceFromMiniPlayer();
+                    }
+                });
+            } else {
+                attachSurfaceToMiniPlayer();
+            }
+        } else {
+            detachSurfaceFromMiniPlayer();
+        }
     }
 
     private void setupBottomPlayer() {
@@ -2397,6 +2559,8 @@ public final class VideoDetailFragment
                         moveFocusToMainFragment(true);
                         manageSpaceAtTheBottom(true);
 
+                        // Y-SYNC: give the surface back before tearing down.
+                        detachSurfaceFromMiniPlayer();
                         bottomSheetBehavior.setPeekHeight(0);
                         cleanUp();
                         break;
@@ -2408,6 +2572,8 @@ public final class VideoDetailFragment
                         // Disable click because overlay buttons located on top of buttons
                         // from the player
                         setOverlayElementsClickable(false);
+                        // Y-SYNC: the video belongs to the full player again.
+                        detachSurfaceFromMiniPlayer();
                         hideSystemUiIfNeeded();
                         // Conditions when the player should be expanded to fullscreen
                         if (DeviceUtils.isLandscape(requireContext())
@@ -2432,10 +2598,21 @@ public final class VideoDetailFragment
                             player.UIs().get(MainPlayerUi.class)
                                     .ifPresent(MainPlayerUi::closeItemsList);
                         }
+                        // Y-SYNC: show the live video in the mini player.
+                        attachSurfaceToMiniPlayer();
                         setOverlayLook(binding.appBarLayout, behavior, 0);
                         break;
                     case BottomSheetBehavior.STATE_DRAGGING:
                     case BottomSheetBehavior.STATE_SETTLING:
+                        // Y-SYNC: when the user starts pulling the mini player
+                        // up, move the video surface back to the full player
+                        // right away, so the expanding area shows the video
+                        // during the gesture instead of a black placeholder.
+                        if (newState == BottomSheetBehavior.STATE_DRAGGING
+                                && lastStableBottomSheetState
+                                        == BottomSheetBehavior.STATE_COLLAPSED) {
+                            detachSurfaceFromMiniPlayer();
+                        }
                         if (isFullscreen()) {
                             showSystemUi();
                         }
@@ -2454,6 +2631,12 @@ public final class VideoDetailFragment
 
             @Override
             public void onSlide(@NonNull final View bottomSheet, final float slideOffset) {
+                // Y-SYNC: past this point the sheet is clearly heading for
+                // the expanded state: the video must be back in the full
+                // player (no-op while it already is there).
+                if (slideOffset > 0.35f) {
+                    detachSurfaceFromMiniPlayer();
+                }
                 setOverlayLook(binding.appBarLayout, behavior, slideOffset);
             }
         };
@@ -2510,16 +2693,16 @@ public final class VideoDetailFragment
         final float floatT = Math.max(0f, Math.min(1f, 1 - slideOffset));
         final float density = getResources().getDisplayMetrics().density;
         miniCardRadiusPx = 24 * density * floatT;
-        binding.overlayLayout.invalidateOutline();
-        binding.overlayLayout.setElevation(8 * density * floatT);
-        final ViewGroup.MarginLayoutParams overlayParams =
-                (ViewGroup.MarginLayoutParams) binding.overlayLayout.getLayoutParams();
+        binding.overlayCard.invalidateOutline();
+        binding.overlayCard.setElevation(8 * density * floatT);
+        final ViewGroup.MarginLayoutParams cardParams =
+                (ViewGroup.MarginLayoutParams) binding.overlayCard.getLayoutParams();
         final int sideMargin = (int) (16 * density * floatT);
-        if (overlayParams.leftMargin != sideMargin
-                || overlayParams.rightMargin != sideMargin) {
-            overlayParams.leftMargin = sideMargin;
-            overlayParams.rightMargin = sideMargin;
-            binding.overlayLayout.setLayoutParams(overlayParams);
+        if (cardParams.leftMargin != sideMargin
+                || cardParams.rightMargin != sideMargin) {
+            cardParams.leftMargin = sideMargin;
+            cardParams.rightMargin = sideMargin;
+            binding.overlayCard.setLayoutParams(cardParams);
         }
         // These numbers are not special. They just do a cool transition
         behavior.setTopAndBottomOffset(
@@ -2529,6 +2712,7 @@ public final class VideoDetailFragment
 
     private void setOverlayElementsClickable(final boolean enable) {
         binding.overlayThumbnail.setClickable(enable);
+        binding.overlayVideoContainer.setClickable(enable);
         binding.overlayThumbnail.setLongClickable(enable);
         binding.overlayMetadataLayout.setClickable(enable);
         binding.overlayMetadataLayout.setLongClickable(enable);

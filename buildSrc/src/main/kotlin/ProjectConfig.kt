@@ -8,8 +8,8 @@ const val NEWPIPE_VERSION_SDK_COMPILE_MINOR = 0
 const val NEWPIPE_VERSION_SDK_MIN = 23
 const val NEWPIPE_VERSION_SDK_TARGET = 35
 
-const val NEWPIPE_VERSION_CODE = 14
-const val NEWPIPE_VERSION_NAME = "1.12.0"
+const val NEWPIPE_VERSION_CODE = 15
+const val NEWPIPE_VERSION_NAME = "1.13.0"
 
 const val NEWPIPE_APPLICATION_ID_OLD = "org.schabi.newpipe"
 const val NEWPIPE_APPLICATION_ID_NEW = "net.newpipe.app"

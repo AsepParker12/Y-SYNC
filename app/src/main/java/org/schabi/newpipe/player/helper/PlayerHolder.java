@@ -74,6 +74,21 @@ public final class PlayerHolder {
         return getPlayer().map(Player::isPlaying).orElse(false);
     }
 
+    /**
+     * Pauses the player, if one is open. Used by the Shorts feed, which plays
+     * its own videos and must not overlap with the main player's audio.
+     */
+    public void pausePlayer() {
+        getPlayer().ifPresent(Player::pause);
+    }
+
+    /**
+     * Resumes the player, if one is open. Counterpart of {@link #pausePlayer()}.
+     */
+    public void playPlayer() {
+        getPlayer().ifPresent(Player::play);
+    }
+
     public boolean isPlayerOpen() {
         return getPlayer().isPresent();
     }

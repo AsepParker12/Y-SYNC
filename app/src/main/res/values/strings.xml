@@ -912,4 +912,7 @@
     <string name="lock_hint">Access code</string>
     <string name="lock_button">Unlock</string>
     <string name="lock_error">Wrong code, try again</string>
+    <string name="shorts_title">Shorts</string>
+    <string name="shorts_open_in_player">Open in player</string>
+    <string name="shorts_error_loading_feed">Could not load Shorts</string>
 </resources>
