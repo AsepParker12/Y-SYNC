@@ -1,5 +1,6 @@
 package org.schabi.newpipe.homefeed;
 
+import android.content.Context;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -51,6 +52,17 @@ import okhttp3.ResponseBody;
  * Visitor data of later responses is captured and sent along, so YouTube
  * keeps the feed session consistent.</p>
  *
+ * <p>The session is persisted across app starts ({@link HomeSession}):
+ * a fresh identity is served YouTube's empty "get started" home (a feed
+ * nudge, zero videos) until it has accumulated watch history — history
+ * the app reports for real watches via {@link HomeWatchReporter} — so
+ * the identity has to survive restarts for real recommendations to ever
+ * attach. Until they do, a first page that comes back empty on every
+ * real route is assembled from anonymous searches instead (the
+ * discovery fallback below), which YouTube answers for any identity;
+ * the real routes are still tried first on every cold start, and take
+ * over again the moment they serve videos.</p>
+ *
  * <p>Videos are collected by walking the whole response tree: the classic
  * {@code videoRenderer} family (also {@code gridVideoRenderer} and
  * {@code compactVideoRenderer}, bare or wrapped in a
@@ -68,10 +80,10 @@ public final class HomeFeedClient {
     private static final String TAG = HomeFeedClient.class.getSimpleName();
 
     // Public API key of the YouTube web client, used by every InnerTube caller.
-    private static final String API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+    static final String API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
     // Used only until the homepage bootstrap scrapes the live client version.
-    private static final String FALLBACK_CLIENT_VERSION = "2.20251001.01.00";
-    private static final String INNERTUBE_BASE_URL = "https://www.youtube.com/youtubei/v1/";
+    static final String FALLBACK_CLIENT_VERSION = "2.20251001.01.00";
+    static final String INNERTUBE_BASE_URL = "https://www.youtube.com/youtubei/v1/";
     private static final String HOME_PAGE_URL = "https://www.youtube.com/";
     private static final String HOME_BROWSE_ID = "FEwhat_to_watch";
     private static final String LOCKUP_VIDEO_CONTENT_TYPE = "LOCKUP_CONTENT_TYPE_VIDEO";
@@ -100,7 +112,23 @@ public final class HomeFeedClient {
     private static final int CENSUS_VIDEO_INDEX = 0;
     private static final int CENSUS_LOCKUP_INDEX = 3;
 
+    // Discovery fallback: when YouTube serves a fresh visitor identity
+    // its empty "get started" home (a feed nudge instead of videos), the
+    // feed is assembled from anonymous searches on broad topics instead,
+    // which YouTube answers for any identity. The topics rotate a few at
+    // a time so the feed keeps mixing subjects as it pages.
+    private static final String[] DISCOVERY_QUERIES = {
+        "musik", "game", "berita", "sepak bola", "komedi", "film",
+        "teknologi", "kuliner"
+    };
+    private static final int DISCOVERY_TOPICS_PER_PAGE = 3;
+    private static final int DISCOVERY_MAX_FIRST_PAGE_ROUNDS = 3;
+    private static final String DISCOVERY_TOKEN = "ysync-discovery-feed";
+
+    private final Context appContext;
     private final Map<String, String> sessionCookies = new LinkedHashMap<>();
+    private final List<DiscoveryTopic> discoveryTopics = new ArrayList<>();
+    private final Set<String> discoverySeenIds = new LinkedHashSet<>();
     private String clientVersion = FALLBACK_CLIENT_VERSION;
 
     @Nullable
@@ -108,6 +136,8 @@ public final class HomeFeedClient {
     private boolean sessionStarted;
     private boolean sessionWarmedUp;
     private boolean feedFromAndroid;
+    private boolean feedFromDiscovery;
+    private int discoveryCursor;
     @NonNull
     private String lastCensus = "";
     @Nullable
@@ -117,6 +147,15 @@ public final class HomeFeedClient {
     private int lastHttpCode = -1;
     @Nullable
     private String lastFailureDetail;
+
+    /**
+     * Creates a client whose anonymous session is persisted in the
+     * given context's default shared preferences (see
+     * {@link HomeSession}); only the application context is kept.
+     */
+    public HomeFeedClient(@NonNull final Context context) {
+        appContext = context.getApplicationContext();
+    }
 
     /**
      * One page of the home feed: the videos it contained, in feed order, and
@@ -158,14 +197,24 @@ public final class HomeFeedClient {
 
     /**
      * Fetches the first page of the feed. The anonymous session is
-     * bootstrapped and warmed up first (once per instance); the
-     * homepage's own {@code ytInitialData} is used when it already
-     * carries videos, otherwise the page comes from a session-backed
-     * {@code browse} request, with an Android-client {@code browse} as
-     * the last resort when the web session is served an empty home.
+     * bootstrapped (or restored from the store) and warmed up first
+     * (once per instance); the homepage's own {@code ytInitialData} is
+     * used when it already carries videos, otherwise the page comes
+     * from a session-backed {@code browse} request, with an
+     * Android-client {@code browse} as the next resort when the web
+     * session is served an empty home — and when every real route
+     * serves the empty "get started" home, the page is assembled from
+     * anonymous searches (the discovery fallback) instead.
      */
     @NonNull
     public FeedPage fetchFirstPage() throws IOException {
+        // Every first page starts over: the real routes are tried first
+        // (an aged session may receive real recommendations by now), and
+        // the discovery fallback state is rebuilt from scratch.
+        feedFromDiscovery = false;
+        discoveryTopics.clear();
+        discoverySeenIds.clear();
+        discoveryCursor = 0;
         ensureSession();
         warmUpSession();
         final FeedPage candidate = bootstrappedPage;
@@ -193,7 +242,11 @@ public final class HomeFeedClient {
             lastFailureDetail = webDetail;
             return page;
         }
-        return fetchFirstPageFromAndroid(page, webDetail);
+        final FeedPage androidPage = fetchFirstPageFromAndroid(page, webDetail);
+        if (!androidPage.getItems().isEmpty()) {
+            return androidPage;
+        }
+        return fetchDiscoveryFirstPage(androidPage);
     }
 
     /**
@@ -231,15 +284,170 @@ public final class HomeFeedClient {
         }
     }
 
+    /*//////////////////////////////////////////////////////////////////////////
+    // Discovery fallback (search-assembled feed)
+    //////////////////////////////////////////////////////////////////////////*/
+
+    /**
+     * One discovery topic: a search query whose pages are pulled into
+     * the feed in rotation. A topic is exhausted once YouTube stops
+     * handing out continuations for it (or its requests start failing).
+     */
+    private static final class DiscoveryTopic {
+        private final String query;
+        @Nullable
+        private String continuation;
+        private boolean started;
+        private boolean exhausted;
+
+        DiscoveryTopic(@NonNull final String query) {
+            this.query = query;
+        }
+    }
+
+    /**
+     * Last resort when every real route served the empty "get started"
+     * home: assemble the first page from anonymous searches instead.
+     * When even the searches yield nothing, the empty real page is
+     * returned (so the error screen keeps the browse census) with the
+     * discovery outcome appended to the failure detail.
+     */
+    @NonNull
+    private FeedPage fetchDiscoveryFirstPage(@NonNull final FeedPage emptyPage) {
+        FeedPage discoveryPage = null;
+        for (int round = 0; round < DISCOVERY_MAX_FIRST_PAGE_ROUNDS; round++) {
+            discoveryPage = fetchDiscoveryPage();
+            if (discoveryPage == null || !discoveryPage.getItems().isEmpty()
+                    || discoveryPage.getContinuationToken() == null) {
+                break;
+            }
+        }
+        if (discoveryPage == null || discoveryPage.getItems().isEmpty()) {
+            lastFailureDetail += "; discovery: items=0";
+            Log.w(TAG, "Home feed discovery fallback is empty: " + lastFailureDetail);
+            return emptyPage;
+        }
+        feedFromDiscovery = true;
+        return discoveryPage;
+    }
+
+    /**
+     * Fetches one discovery round: one search page from each of the
+     * next topics in rotation, interleaved round-robin and deduplicated
+     * against everything the discovery feed has already served. The
+     * returned page's continuation is a placeholder token while any
+     * topic still has pages left, and {@code null} once the whole
+     * rotation is exhausted. Returns {@code null} when no topic could
+     * be fetched at all in this round.
+     */
+    @Nullable
+    private FeedPage fetchDiscoveryPage() {
+        if (discoveryTopics.isEmpty()) {
+            for (final String query : DISCOVERY_QUERIES) {
+                discoveryTopics.add(new DiscoveryTopic(query));
+            }
+            discoveryCursor = 0;
+        }
+        final List<List<HomeFeedItem>> perTopicItems = new ArrayList<>();
+        int fetched = 0;
+        int scanned = 0;
+        while (fetched < DISCOVERY_TOPICS_PER_PAGE
+                && scanned < discoveryTopics.size()) {
+            final DiscoveryTopic topic = discoveryTopics.get(discoveryCursor);
+            discoveryCursor = (discoveryCursor + 1) % discoveryTopics.size();
+            scanned++;
+            if (topic.exhausted) {
+                continue;
+            }
+            final List<HomeFeedItem> topicItems = fetchDiscoveryTopicPage(topic);
+            if (topicItems != null) {
+                perTopicItems.add(topicItems);
+                fetched++;
+            }
+        }
+        if (perTopicItems.isEmpty()) {
+            return null;
+        }
+        final List<HomeFeedItem> items = new ArrayList<>();
+        boolean anyLeft = true;
+        for (int index = 0; anyLeft; index++) {
+            anyLeft = false;
+            for (final List<HomeFeedItem> topicItems : perTopicItems) {
+                if (index < topicItems.size()) {
+                    anyLeft = true;
+                    final HomeFeedItem item = topicItems.get(index);
+                    if (discoverySeenIds.add(item.getVideoId())) {
+                        items.add(item);
+                    }
+                }
+            }
+        }
+        return new FeedPage(items,
+                hasDiscoveryTopicsLeft() ? DISCOVERY_TOKEN : null);
+    }
+
+    /**
+     * Fetches the next search page of one discovery topic (its first
+     * page when it has not started yet) through the session's search
+     * plumbing. The parse deliberately does not touch the renderer
+     * census, which keeps describing the last real browse response.
+     * A failed topic is dropped from the rotation instead of being
+     * retried forever.
+     */
+    @Nullable
+    private List<HomeFeedItem> fetchDiscoveryTopicPage(
+            @NonNull final DiscoveryTopic topic) {
+        final String body;
+        if (!topic.started) {
+            body = "{" + contextJson() + ",\"query\":\""
+                    + escapeJson(topic.query) + "\"}";
+        } else if (topic.continuation != null) {
+            body = "{" + contextJson() + ",\"continuation\":\""
+                    + escapeJson(topic.continuation) + "\"}";
+        } else {
+            topic.exhausted = true;
+            return null;
+        }
+        final FeedPage page;
+        try {
+            page = parsePage(postJson("search", body), false);
+        } catch (final IOException e) {
+            Log.w(TAG, "Discovery search failed for query: " + topic.query, e);
+            topic.exhausted = true;
+            return null;
+        }
+        topic.started = true;
+        topic.continuation = page.getContinuationToken();
+        if (topic.continuation == null) {
+            topic.exhausted = true;
+        }
+        return page.getItems();
+    }
+
+    private boolean hasDiscoveryTopicsLeft() {
+        for (final DiscoveryTopic topic : discoveryTopics) {
+            if (!topic.exhausted) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Fetches the next page of the feed, using a continuation token from
      * a previous page. The request goes to the client that produced the
      * first page (the web session or the Android client), as a
-     * continuation only makes sense with the client that issued it.
+     * continuation only makes sense with the client that issued it. In
+     * discovery mode the token is a placeholder: the next topics of the
+     * rotation are advanced instead, each with its own token.
      */
     @NonNull
     public FeedPage fetchNextPage(@NonNull final String continuationToken) throws IOException {
         ensureSession();
+        if (feedFromDiscovery) {
+            final FeedPage page = fetchDiscoveryPage();
+            return page != null ? page : new FeedPage(new ArrayList<>(), null);
+        }
         if (feedFromAndroid) {
             final String body = "{" + androidContextJson()
                     + ",\"continuation\":\"" + escapeJson(continuationToken) + "\"}";
@@ -267,19 +475,41 @@ public final class HomeFeedClient {
     //////////////////////////////////////////////////////////////////////////*/
 
     /**
-     * Establishes the anonymous session, once per instance: fetches the
-     * homepage like a desktop browser, keeps every cookie YouTube sets,
-     * adopts the client version and visitor data of the page's config, and
-     * parses the embedded {@code ytInitialData} as a candidate first page.
-     * A failed bootstrap is not fatal — the browse request still runs,
-     * just without a session — but its outcome is remembered in
-     * {@link #bootstrapDetail} for the failure diagnostics.
+     * Establishes the anonymous session, once per instance. A session
+     * stored by an earlier run ({@link HomeSession}) is restored and
+     * the homepage fetch skipped — the visitor identity must survive
+     * restarts so it can accumulate the history YouTube attaches
+     * recommendations to. Only a missing or incomplete stored session
+     * (no client version to scrape-freeze) goes through the homepage
+     * fetch: like a desktop browser, keeping every cookie YouTube sets,
+     * adopting the client version and visitor data of the page's
+     * config, and parsing the embedded {@code ytInitialData} as a
+     * candidate first page. A failed bootstrap is not fatal — the
+     * browse request still runs, just without a session — but its
+     * outcome is remembered in {@link #bootstrapDetail} for the failure
+     * diagnostics.
      */
     private void ensureSession() {
         if (sessionStarted) {
             return;
         }
         sessionStarted = true;
+        final HomeSession stored = HomeSession.load(appContext);
+        if (!stored.isEmpty()) {
+            sessionCookies.putAll(stored.getCookies());
+            if (visitorData == null) {
+                visitorData = stored.getVisitorData();
+            }
+            if (stored.getClientVersion() != null) {
+                clientVersion = stored.getClientVersion();
+                bootstrapDetail = "html: stored session, ytInitialData=no, items=0";
+                return;
+            }
+            // Partial stored session (no client version yet): fall
+            // through to the homepage fetch, which refreshes the
+            // cookies and scrapes the version; the preloaded values
+            // stay as fallbacks.
+        }
         try {
             final OkHttpClient client = DownloaderImpl.getInstance().getClient();
             final Request request = new Request.Builder()
@@ -319,6 +549,16 @@ public final class HomeFeedClient {
             bootstrapDetail = "html: error";
             Log.w(TAG, "Home session bootstrap failed", e);
         }
+        persistSession();
+    }
+
+    /**
+     * Writes the working session (cookies, visitor data, client
+     * version) back to the persistent store, so the visitor identity
+     * continues where it left off on the next app start.
+     */
+    private void persistSession() {
+        HomeSession.store(appContext, sessionCookies, visitorData, clientVersion);
     }
 
     /**
@@ -343,18 +583,27 @@ public final class HomeFeedClient {
 
     /**
      * Stores the cookies of a response in the session store, replacing
-     * same-named ones, so they can be replayed on later requests.
+     * same-named ones, so they can be replayed on later requests. When
+     * a cookie actually changed, the session is written back to the
+     * persistent store right away, so rotations are never lost.
      */
     private void absorbCookies(@NonNull final Response response) {
+        boolean changed = false;
         for (final String header : response.headers("Set-Cookie")) {
             final int semicolon = header.indexOf(';');
             final String pair = (semicolon < 0 ? header : header.substring(0, semicolon))
                     .trim();
             final int equals = pair.indexOf('=');
             if (equals > 0) {
-                sessionCookies.put(pair.substring(0, equals).trim(),
-                        pair.substring(equals + 1).trim());
+                final String name = pair.substring(0, equals).trim();
+                final String value = pair.substring(equals + 1).trim();
+                if (!value.equals(sessionCookies.put(name, value))) {
+                    changed = true;
+                }
             }
+        }
+        if (changed) {
+            persistSession();
         }
     }
 
@@ -455,11 +704,26 @@ public final class HomeFeedClient {
 
     @NonNull
     private FeedPage parsePage(@NonNull final JsonObject root) {
+        return parsePage(root, true);
+    }
+
+    /**
+     * Parses one InnerTube response into a feed page. The renderer
+     * census is only updated for real browse responses
+     * ({@code trackCensus}): the failure diagnostics describe what the
+     * home browse routes served, and discovery search parses must not
+     * overwrite that picture with search results.
+     */
+    @NonNull
+    private FeedPage parsePage(@NonNull final JsonObject root,
+                               final boolean trackCensus) {
         final JsonObject responseContext = root.getObject("responseContext");
         if (responseContext != null) {
             final String newVisitorData = responseContext.getString("visitorData");
-            if (newVisitorData != null && !newVisitorData.isEmpty()) {
+            if (newVisitorData != null && !newVisitorData.isEmpty()
+                    && !newVisitorData.equals(visitorData)) {
                 visitorData = newVisitorData;
+                persistSession();
             }
         }
         final List<HomeFeedItem> items = new ArrayList<>();
@@ -467,7 +731,9 @@ public final class HomeFeedClient {
         final String[] continuation = new String[1];
         final int[] census = new int[CENSUS_KEYS.length];
         collectFromTree(root, items, seen, continuation, census);
-        lastCensus = formatCensus(census);
+        if (trackCensus) {
+            lastCensus = formatCensus(census);
+        }
         return new FeedPage(items, continuation[0]);
     }
 

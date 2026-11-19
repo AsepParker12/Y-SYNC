@@ -82,7 +82,7 @@ public final class HomeFeedFragment extends BaseFragment {
                               @Nullable final Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
         setTitle(getString(R.string.bottom_nav_home));
-        feedClient = new HomeFeedClient();
+        feedClient = new HomeFeedClient(requireContext());
 
         adapter = new HomeFeedAdapter();
         layoutManager = new LinearLayoutManager(requireContext());

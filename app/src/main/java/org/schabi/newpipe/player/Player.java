@@ -95,6 +95,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfo;
 import org.schabi.newpipe.extractor.stream.StreamType;
 import org.schabi.newpipe.extractor.stream.VideoStream;
 import org.schabi.newpipe.fragments.detail.VideoDetailFragment;
+import org.schabi.newpipe.homefeed.HomeWatchReporter;
 import org.schabi.newpipe.local.history.HistoryRecordManager;
 import org.schabi.newpipe.player.event.PlayerEventListener;
 import org.schabi.newpipe.player.event.PlayerServiceEventListener;
@@ -1955,6 +1956,9 @@ public final class Player implements PlaybackListener, Listener {
 
         loadCurrentThumbnail(info.getThumbnails());
         registerStreamViewed();
+        // Let the home feed's shared visitor identity learn from this
+        // watch, so YouTube eventually serves it real recommendations.
+        HomeWatchReporter.reportWatch(context, info);
 
         notifyMetadataUpdateToListeners();
         notifyAudioTrackUpdateToListeners();
