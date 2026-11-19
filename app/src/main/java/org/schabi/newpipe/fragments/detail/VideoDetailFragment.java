@@ -58,6 +58,7 @@ import androidx.coordinatorlayout.widget.CoordinatorLayout;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceManager;
+import androidx.viewpager.widget.ViewPager;
 
 import com.evernote.android.state.State;
 import com.google.android.exoplayer2.PlaybackException;
@@ -146,6 +147,8 @@ public final class VideoDetailFragment
         PlayerServiceExtendedEventListener,
         OnKeyDownListener {
     public static final String KEY_SWITCHING_PLAYERS = "switching_players";
+    private static final String KEY_LAST_STABLE_BOTTOM_SHEET_STATE =
+            "last_stable_bottom_sheet_state";
 
     private static final float MAX_OVERLAY_ALPHA = 0.9f;
     private static final float MAX_PLAYER_HEIGHT = 0.7f;
@@ -170,6 +173,11 @@ public final class VideoDetailFragment
     // tabs
     @Nullable
     private String liveChatVideoId;
+    // Y-SYNC: while the live chat tab is selected, the app bar is pinned
+    // expanded so the video stays on top (see updateChatVideoPin); these
+    // remember the pin state and the scroll flags to restore afterwards.
+    private boolean appBarPinnedForChat;
+    private int appBarScrollFlagsBeforePin;
     private boolean showComments;
     private boolean showRelatedItems;
     private boolean showDescription;
@@ -325,6 +333,15 @@ public final class VideoDetailFragment
     public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Y-SYNC: restore the player sheet's last stable state from our
+        // own saved key (see onSaveInstanceState), so setupBottomPlayer()
+        // re-applies the state the sheet actually had before a rotation
+        // instead of the EXPANDED field default.
+        if (savedInstanceState != null) {
+            lastStableBottomSheetState = savedInstanceState.getInt(
+                    KEY_LAST_STABLE_BOTTOM_SHEET_STATE, lastStableBottomSheetState);
+        }
+
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(activity);
         showComments = prefs.getBoolean(getString(R.string.show_comments_key), true);
         showRelatedItems = prefs.getBoolean(getString(R.string.show_next_video_key), true);
@@ -353,6 +370,16 @@ public final class VideoDetailFragment
                              final Bundle savedInstanceState) {
         binding = FragmentVideoDetailBinding.inflate(inflater, container, false);
         return binding.getRoot();
+    }
+
+    @Override
+    public void onSaveInstanceState(@NonNull final Bundle outState) {
+        super.onSaveInstanceState(outState);
+        // Y-SYNC: persist the player sheet's last stable state under our
+        // own key, so it is guaranteed to survive recreation (rotation)
+        // and setupBottomPlayer() can re-apply it — a collapsed mini
+        // player must not come back EXPANDED.
+        outState.putInt(KEY_LAST_STABLE_BOTTOM_SHEET_STATE, lastStableBottomSheetState);
     }
 
     @Override
@@ -446,6 +473,12 @@ public final class VideoDetailFragment
         // card: the player UI outlives this view (e.g. on rotation) and
         // would lose its surface view with the destroyed hierarchy.
         detachSurfaceFromMiniPlayer();
+        // Y-SYNC: forget the chat video pin: the app bar is destroyed
+        // with this view, a recreated one inflates the XML scroll flags
+        // again, and updateChatVideoPin() re-evaluates on the new
+        // hierarchy — restoring the saved flags here would write them
+        // into a dying view for nothing.
+        appBarPinnedForChat = false;
         super.onDestroyView();
         binding = null;
     }
@@ -638,6 +671,14 @@ public final class VideoDetailFragment
         pageAdapter = new TabAdapter(getChildFragmentManager());
         binding.viewPager.setAdapter(pageAdapter);
         binding.tabLayout.setupWithViewPager(binding.viewPager);
+        // Y-SYNC: keep the video pinned on top while the live chat tab
+        // is selected (see updateChatVideoPin).
+        binding.viewPager.addOnPageChangeListener(new ViewPager.SimpleOnPageChangeListener() {
+            @Override
+            public void onPageSelected(final int position) {
+                updateChatVideoPin();
+            }
+        });
 
         binding.detailThumbnailRootLayout.requestFocus();
 
@@ -923,6 +964,11 @@ public final class VideoDetailFragment
                     LIVE_CHAT_TAB_TAG);
             tabIcons.add(R.drawable.ic_live_tv);
             tabContentDescriptions.add(R.string.live_chat_tab_description);
+            // The tabs can be (re)built while the sheet is not expanded
+            // (e.g. stream info arrives while the mini player is showing):
+            // hand the fresh chat fragment the sheet's current state.
+            notifyLiveChatSheetState(
+                    bottomSheetState == BottomSheetBehavior.STATE_EXPANDED);
         }
 
         if (shouldShowComments()) {
@@ -960,6 +1006,11 @@ public final class VideoDetailFragment
         }
         // the page adapter now contains tabs: show the tab layout
         updateTabLayoutVisibility();
+        // Y-SYNC: a rebuild does not always change the selected page (so
+        // no page-selected callback fires) — e.g. navigating from a
+        // livestream to a normal video keeps position 0 while the chat
+        // tab disappears. Re-evaluate the chat video pin explicitly.
+        updateChatVideoPin();
     }
 
     /**
@@ -980,14 +1031,21 @@ public final class VideoDetailFragment
 
     private void updateTabs(@NonNull final StreamInfo info) {
         // Keep the live chat tab in sync with the loaded stream: insert it
-        // (as the first tab) for livestreams, drop it for everything else,
-        // and rebuild it when navigating from one livestream to another.
-        // initTabs() restores the previously selected tab by tag, and the
-        // updateItem calls below then fill the rebuilt related/description
-        // tabs with this info, exactly like after a regular initTabs().
+        // (as the first tab) for livestreams and their replays, drop it
+        // for everything else, and rebuild it when navigating from one
+        // such stream to another. Finished livestreams (POST_LIVE_STREAM)
+        // get the tab too: the chat bootstrap detects the replay and the
+        // tab shows its "replay not supported yet" state, instead of the
+        // tab being mysteriously absent on exactly the streams that had
+        // a chat while live. initTabs() restores the previously selected
+        // tab by tag, and the updateItem calls below then fill the
+        // rebuilt related/description tabs with this info, exactly like
+        // after a regular initTabs().
         final boolean chatTabPresent =
                 pageAdapter.getItemPositionByTitle(LIVE_CHAT_TAB_TAG) != -1;
-        if (StreamTypeUtil.isLiveStream(info.getStreamType())) {
+        final boolean chatTabWanted = StreamTypeUtil.isLiveStream(info.getStreamType())
+                || info.getStreamType() == StreamType.POST_LIVE_STREAM;
+        if (chatTabWanted) {
             if (!chatTabPresent || !info.getId().equals(liveChatVideoId)) {
                 liveChatVideoId = info.getId();
                 initTabs();
@@ -1017,6 +1075,69 @@ public final class VideoDetailFragment
         updateTabLayoutVisibility();
         pageAdapter.notifyDataSetUpdate();
         updateTabIconsAndContentDescriptions();
+    }
+
+    /**
+     * Y-SYNC: while the live chat tab is selected, the video stays pinned
+     * on top and the chat scrolls beneath it (YouTube behaviour). With
+     * the stock collapsing app bar, scrolling the chat list scrolls the
+     * video away and there is no way back short of reopening the stream.
+     * Pinning clears the collapsing child's scroll flags (after saving
+     * them) and expands the bar; switching to any other tab restores the
+     * saved flags exactly. The flags only gate nested-scroll collapsing,
+     * so fullscreen/landscape (where the tabs are hidden) are unaffected,
+     * and nothing here touches the sheet state or the holder padding.
+     */
+    private void updateChatVideoPin() {
+        if (binding == null || pageAdapter == null) {
+            return;
+        }
+        final boolean chatSelected = LIVE_CHAT_TAB_TAG.equals(
+                pageAdapter.getItemTitle(binding.viewPager.getCurrentItem()));
+        if (chatSelected) {
+            pinAppBarForChat();
+        } else {
+            unpinAppBarForChat();
+        }
+    }
+
+    private void pinAppBarForChat() {
+        if (appBarPinnedForChat) {
+            return;
+        }
+        final AppBarLayout.LayoutParams params = getAppBarChildLayoutParams();
+        if (params == null) {
+            return;
+        }
+        appBarScrollFlagsBeforePin = params.getScrollFlags();
+        params.setScrollFlags(AppBarLayout.LayoutParams.SCROLL_FLAG_NO_SCROLL);
+        binding.appBarLayout.getChildAt(0).setLayoutParams(params);
+        appBarPinnedForChat = true;
+        binding.appBarLayout.setExpanded(true, true);
+    }
+
+    private void unpinAppBarForChat() {
+        if (!appBarPinnedForChat) {
+            return;
+        }
+        appBarPinnedForChat = false;
+        final AppBarLayout.LayoutParams params = getAppBarChildLayoutParams();
+        if (params == null) {
+            return;
+        }
+        params.setScrollFlags(appBarScrollFlagsBeforePin);
+        binding.appBarLayout.getChildAt(0).setLayoutParams(params);
+    }
+
+    @Nullable
+    private AppBarLayout.LayoutParams getAppBarChildLayoutParams() {
+        if (binding == null || binding.appBarLayout.getChildCount() == 0) {
+            return null;
+        }
+        final ViewGroup.LayoutParams layoutParams =
+                binding.appBarLayout.getChildAt(0).getLayoutParams();
+        return layoutParams instanceof AppBarLayout.LayoutParams
+                ? (AppBarLayout.LayoutParams) layoutParams : null;
     }
 
     private boolean shouldShowComments() {
@@ -2613,8 +2734,19 @@ public final class VideoDetailFragment
 
         final FrameLayout bottomSheetLayout = activity.findViewById(R.id.fragment_player_holder);
         bottomSheetBehavior = BottomSheetBehavior.from(bottomSheetLayout);
-        bottomSheetBehavior.setState(lastStableBottomSheetState);
-        updateBottomSheetState(lastStableBottomSheetState);
+        // Y-SYNC: apply the (possibly restored) stable state deferred.
+        // BottomSheetBehavior restores its own saved state when the view
+        // hierarchy state is restored, which lands after initListeners —
+        // setting the state synchronously here races that restore, and
+        // after a rotation the restored behavior state, this field and
+        // MainActivity's slide offset ended up disagreeing. Posting lands
+        // after the restore, and the sheet callback registered below is
+        // already in place by then, so it performs the full state setup
+        // (peek height, overlay, surface) for the applied state.
+        bottomSheetLayout.post(() -> {
+            bottomSheetBehavior.setState(lastStableBottomSheetState);
+            updateBottomSheetState(lastStableBottomSheetState);
+        });
 
         final int peekHeight = getResources().getDimensionPixelSize(R.dimen.mini_player_height);
         if (bottomSheetState != BottomSheetBehavior.STATE_HIDDEN) {
@@ -2820,11 +2952,29 @@ public final class VideoDetailFragment
                 .map(playerUi -> playerUi.getBinding().getRoot());
     }
 
+    /**
+     * Tells the live chat tab (when present) whether the player sheet is
+     * expanded, so it polls only while the watch page is actually on
+     * screen and not while collapsed to the mini player.
+     */
+    private void notifyLiveChatSheetState(final boolean expanded) {
+        if (pageAdapter == null) {
+            return;
+        }
+        final int position = pageAdapter.getItemPositionByTitle(LIVE_CHAT_TAB_TAG);
+        if (position >= 0
+                && pageAdapter.getItem(position) instanceof LiveChatFragment) {
+            ((LiveChatFragment) pageAdapter.getItem(position))
+                    .setSheetExpanded(expanded);
+        }
+    }
+
     private void updateBottomSheetState(final int newState) {
         bottomSheetState = newState;
         if (newState != BottomSheetBehavior.STATE_DRAGGING
                 && newState != BottomSheetBehavior.STATE_SETTLING) {
             lastStableBottomSheetState = newState;
+            notifyLiveChatSheetState(newState == BottomSheetBehavior.STATE_EXPANDED);
         }
     }
 }

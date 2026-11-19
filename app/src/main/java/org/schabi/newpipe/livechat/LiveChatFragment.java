@@ -43,6 +43,10 @@ public final class LiveChatFragment extends BaseFragment {
     private static final long ERROR_BACKOFF_BASE_MS = 2000L;
     private static final long ERROR_BACKOFF_MAX_MS = 30000L;
 
+    private static final String ARG_SERVICE_ID = "live_chat_service_id";
+    private static final String ARG_URL = "live_chat_url";
+    private static final String ARG_VIDEO_ID = "live_chat_video_id";
+
     private int serviceId;
     private String url;
     private String videoId;
@@ -66,9 +70,32 @@ public final class LiveChatFragment extends BaseFragment {
     private boolean rebootstrapped;
     private int consecutiveErrors;
 
+    // Auto-scroll state: a fresh chat view counts as at the bottom, so
+    // sticking starts engaged; it disengages only when the user actually
+    // scrolls away from the bottom, and re-engages when they scroll back
+    // (or tap the jump-to-latest button). While engaged, every poll
+    // batch moves the list to the newest message.
+    private boolean stickingToBottom = true;
+
+    // Whether the player sheet hosting this tab is expanded. Polling only
+    // makes sense while the watch page is actually on screen: collapsed
+    // to the mini player, the chat is invisible and polling just burns
+    // data and battery. The host reports the state through
+    // setSheetExpanded; expanded is the default until it says otherwise.
+    private boolean sheetExpanded = true;
+
     public static LiveChatFragment getInstance(final int serviceId, final String url,
                                                final String videoId) {
         final LiveChatFragment instance = new LiveChatFragment();
+        // The values also go into the arguments: plain fields do not
+        // survive recreation (rotation restores a fresh instance whose
+        // fields are null, and the pager never asks for a new fragment),
+        // which left the restored tab on "not available" forever.
+        final Bundle args = new Bundle();
+        args.putInt(ARG_SERVICE_ID, serviceId);
+        args.putString(ARG_URL, url);
+        args.putString(ARG_VIDEO_ID, videoId);
+        instance.setArguments(args);
         instance.setInitialData(serviceId, url, videoId);
         return instance;
     }
@@ -94,6 +121,18 @@ public final class LiveChatFragment extends BaseFragment {
     //////////////////////////////////////////////////////////////////////////*/
 
     @Override
+    public void onCreate(final Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // The arguments are the copy of the initial data that survives
+        // recreation; the fields stay the working copies.
+        final Bundle args = getArguments();
+        if (args != null) {
+            setInitialData(args.getInt(ARG_SERVICE_ID), args.getString(ARG_URL),
+                    args.getString(ARG_VIDEO_ID));
+        }
+    }
+
+    @Override
     public View onCreateView(@NonNull final LayoutInflater inflater,
                              @Nullable final ViewGroup container,
                              @Nullable final Bundle savedInstanceState) {
@@ -112,16 +151,28 @@ public final class LiveChatFragment extends BaseFragment {
             @Override
             public void onScrolled(@NonNull final RecyclerView recyclerView,
                                    final int dx, final int dy) {
-                if (isAtBottom()) {
+                // Sticking follows where the user actually is: seeing
+                // the last item (re-)engages it, anything above disengages
+                // it. Programmatic scrolls to the bottom land on the last
+                // item, so they keep it engaged.
+                stickingToBottom = isAtBottom();
+                if (stickingToBottom) {
                     binding.liveChatJumpLatest.setVisibility(View.GONE);
                 }
             }
         });
         binding.liveChatRetry.setOnClickListener(view -> onRetryClicked());
         binding.liveChatJumpLatest.setOnClickListener(view -> {
+            stickingToBottom = true;
             scrollToBottom();
             binding.liveChatJumpLatest.setVisibility(View.GONE);
         });
+        if (adapter.getItemCount() > 0 && stickingToBottom) {
+            // The view was recreated (the pager destroys far-away tabs)
+            // with the history intact: a fresh layout manager starts at
+            // the top, so jump back to the newest message after layout.
+            binding.liveChatList.post(this::scrollToBottom);
+        }
 
         if (videoId == null) {
             // Fragment recreated without its data (e.g. process death):
@@ -167,9 +218,26 @@ public final class LiveChatFragment extends BaseFragment {
     // Poll loop (background thread)
     //////////////////////////////////////////////////////////////////////////*/
 
+    /**
+     * Called by the hosting watch page when its player sheet expands or
+     * collapses to the mini player: the poll loop runs only while the
+     * sheet is expanded and the chat could actually be seen.
+     */
+    public void setSheetExpanded(final boolean expanded) {
+        if (sheetExpanded == expanded) {
+            return;
+        }
+        sheetExpanded = expanded;
+        if (expanded) {
+            maybeStartLoop();
+        } else {
+            stopLoop();
+        }
+    }
+
     private void maybeStartLoop() {
         if (binding == null || videoId == null || loopRunning || chatEnded
-                || !isResumed() || !getUserVisibleHint()) {
+                || !sheetExpanded || !isResumed() || !getUserVisibleHint()) {
             return;
         }
         loopRunning = true;
@@ -268,7 +336,7 @@ public final class LiveChatFragment extends BaseFragment {
         }
         binding.liveChatLoading.setVisibility(View.GONE);
 
-        final boolean atBottom = isAtBottom();
+        final boolean wasEmpty = adapter.getItemCount() == 0;
         final int added = adapter.addItems(page.getItems());
         for (final Map.Entry<String, String> deleted : page.getDeletedMessages().entrySet()) {
             final String text = deleted.getValue() != null
@@ -276,7 +344,14 @@ public final class LiveChatFragment extends BaseFragment {
             adapter.markDeleted(deleted.getKey(), text);
         }
         if (added > 0) {
-            if (atBottom) {
+            if (wasEmpty) {
+                // First batch: open on the newest message, like YouTube.
+                // Scroll once now and once more after the pending layout
+                // pass — the first layout of a fresh list can otherwise
+                // leave the pending scroll short of the end.
+                scrollToBottom();
+                binding.liveChatList.post(this::scrollToBottom);
+            } else if (stickingToBottom) {
                 scrollToBottom();
             } else {
                 binding.liveChatJumpLatest.setVisibility(View.VISIBLE);
@@ -344,7 +419,7 @@ public final class LiveChatFragment extends BaseFragment {
         if (layoutManager == null || adapter.getItemCount() == 0) {
             return true;
         }
-        return layoutManager.findLastVisibleItemPosition() >= adapter.getItemCount() - 2;
+        return layoutManager.findLastVisibleItemPosition() >= adapter.getItemCount() - 1;
     }
 
     private void scrollToBottom() {

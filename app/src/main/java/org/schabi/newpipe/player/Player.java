@@ -1,6 +1,8 @@
 package org.schabi.newpipe.player;
 
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW;
+import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_DECODING_DECODER_INIT_FAILED;
+import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_DECODING_FAILED;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND;
@@ -199,6 +201,14 @@ public final class Player implements PlaybackListener, Listener {
     private PlayQueueItem currentItem;
     @Nullable
     private MediaItemTag currentMetadata;
+    /**
+     * The stream URL that already used its one silent decoder-error reload
+     * (see {@link #onPlayerError(PlaybackException)}). Keyed by URL, so a
+     * stream change re-arms the retry; cleared when playback reaches
+     * {@code STATE_READY}, so a later failure counts as a new incident.
+     */
+    @Nullable
+    private String decodingRetriedForUrl;
     @Nullable
     private Bitmap currentThumbnail;
     @Nullable
@@ -1095,6 +1105,9 @@ public final class Player implements PlaybackListener, Listener {
                 }
                 break;
             case com.google.android.exoplayer2.Player.STATE_READY: //3
+                // Playback is flowing: a decoder error from here on is a new
+                // incident, so re-arm its one silent reload (see onPlayerError).
+                decodingRetriedForUrl = null;
                 if (!isPrepared) {
                     isPrepared = true;
                     onPrepared(playWhenReady);
@@ -1586,6 +1599,25 @@ public final class Player implements PlaybackListener, Listener {
                 // Reload playback on unexpected errors:
                 setRecovery();
                 reloadPlayQueueManager();
+                break;
+            case ERROR_CODE_DECODING_FAILED:
+            case ERROR_CODE_DECODING_DECODER_INIT_FAILED:
+                // Decoder errors are often transient — e.g. every hardware
+                // codec was held by another player — so reload the stream
+                // once, like the timeout group above, instead of shutting
+                // down. The retry is silent (catchable: no error
+                // notification); a second failure of the same stream falls
+                // through to the regular shutdown + notification.
+                final String streamUrl = currentMetadata == null
+                        ? null : currentMetadata.getStreamUrl();
+                if (streamUrl != null && !streamUrl.equals(decodingRetriedForUrl)) {
+                    decodingRetriedForUrl = streamUrl;
+                    isCatchableException = true;
+                    setRecovery();
+                    reloadPlayQueueManager();
+                } else {
+                    onPlaybackShutdown();
+                }
                 break;
             default:
                 // API, remote and renderer errors belong here:

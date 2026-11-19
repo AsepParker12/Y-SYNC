@@ -16,11 +16,12 @@ import org.schabi.newpipe.util.ExtractorHelper;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -38,6 +39,7 @@ public final class ShortsStreamResolver {
     private static final String TAG = ShortsStreamResolver.class.getSimpleName();
 
     private static final int MAX_CONCURRENT_EXTRACTIONS = 3;
+    private static final int MAX_CACHED_RESULTS = 60;
     private static final int MAX_SHORT_SIDE_PX = 720;
     private static final int YOUTUBE_SERVICE_ID = 0;
 
@@ -105,7 +107,20 @@ public final class ShortsStreamResolver {
     private final ExecutorService executor =
             Executors.newFixedThreadPool(MAX_CONCURRENT_EXTRACTIONS);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Map<String, ResolvedShort> cache = new ConcurrentHashMap<>();
+    // Bounded on purpose: a full StreamInfo is heavy, and an endless
+    // scrolling session must not accumulate results without limit.
+    // Access-ordered, so the shorts around the user's position (the ones
+    // read through getCached on every pool sync) stay in the cache.
+    private final Map<String, ResolvedShort> cache = Collections.synchronizedMap(
+            new LinkedHashMap<String, ResolvedShort>(16, 0.75f, true) {
+                private static final long serialVersionUID = 1L;
+
+                @Override
+                protected boolean removeEldestEntry(
+                        final Map.Entry<String, ResolvedShort> eldest) {
+                    return size() > MAX_CACHED_RESULTS;
+                }
+            });
     // The queue, the pending callbacks and the running counter are all guarded
     // by synchronizing on the queue.
     private final Deque<Task> queue = new ArrayDeque<>();
@@ -154,9 +169,12 @@ public final class ShortsStreamResolver {
     }
 
     public void shutdown() {
-        shutdown = true;
-        executor.shutdownNow();
+        // The flag and the executor shutdown happen under the queue lock,
+        // the same lock pump() submits tasks under: a task can therefore
+        // never be submitted to an already-terminated executor.
         synchronized (queue) {
+            shutdown = true;
+            executor.shutdownNow();
             queue.clear();
             pendingCallbacks.clear();
             scheduledTasks.clear();
@@ -193,16 +211,19 @@ public final class ShortsStreamResolver {
     }
 
     private void pump() {
-        while (true) {
-            final Task task;
-            synchronized (queue) {
-                if (shutdown || running >= MAX_CONCURRENT_EXTRACTIONS || queue.isEmpty()) {
-                    return;
-                }
-                task = queue.pollFirst();
+        // execute() stays inside the lock, together with the shutdown flag
+        // check: shutdown() flips the flag and terminates the executor under
+        // the same lock, so submitting to a terminated executor (an
+        // uncaught RejectedExecutionException) cannot interleave here.
+        // execute() on this pool never blocks, so the lock is not held
+        // across blocking work.
+        synchronized (queue) {
+            while (!shutdown && running < MAX_CONCURRENT_EXTRACTIONS
+                    && !queue.isEmpty()) {
+                final Task task = queue.pollFirst();
                 running++;
+                executor.execute(() -> runTask(task));
             }
-            executor.execute(() -> runTask(task));
         }
     }
 

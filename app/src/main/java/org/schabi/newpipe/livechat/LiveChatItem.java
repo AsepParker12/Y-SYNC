@@ -26,6 +26,9 @@ public final class LiveChatItem {
     @Nullable
     private final String authorPhotoUrl;
     private final long timestampUsec;
+    // The timestamp, formatted once at parse time: rows bind many times,
+    // so the adapter never formats dates while binding.
+    private final String timeText;
     private final Type type;
     @Nullable
     private final String paidAmountText;
@@ -42,6 +45,7 @@ public final class LiveChatItem {
                         @NonNull final String messageText,
                         @Nullable final String authorPhotoUrl,
                         final long timestampUsec,
+                        @NonNull final String timeText,
                         @NonNull final Type type,
                         @Nullable final String paidAmountText,
                         final int paidBackgroundColor,
@@ -56,6 +60,7 @@ public final class LiveChatItem {
         this.messageText = messageText;
         this.authorPhotoUrl = authorPhotoUrl;
         this.timestampUsec = timestampUsec;
+        this.timeText = timeText;
         this.type = type;
         this.paidAmountText = paidAmountText;
         this.paidBackgroundColor = paidBackgroundColor;
@@ -73,7 +78,7 @@ public final class LiveChatItem {
     @NonNull
     public LiveChatItem withMessageText(@NonNull final String newMessageText) {
         return new LiveChatItem(id, authorName, authorChannelId, newMessageText,
-                authorPhotoUrl, timestampUsec, type, paidAmountText,
+                authorPhotoUrl, timestampUsec, timeText, type, paidAmountText,
                 paidBackgroundColor, superSticker, authorIsOwner, authorIsModerator,
                 authorIsVerified, authorIsMember);
     }
@@ -105,6 +110,16 @@ public final class LiveChatItem {
 
     public long getTimestampUsec() {
         return timestampUsec;
+    }
+
+    /**
+     * The timestamp formatted for the row's time label ({@code HH:mm}),
+     * computed once when the message was parsed; empty when the renderer
+     * carried no timestamp.
+     */
+    @NonNull
+    public String getTimeText() {
+        return timeText;
     }
 
     @NonNull

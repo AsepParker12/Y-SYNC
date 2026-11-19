@@ -14,12 +14,9 @@ import org.schabi.newpipe.R;
 import org.schabi.newpipe.databinding.ListLiveChatItemBinding;
 import org.schabi.newpipe.util.image.CoilHelper;
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -38,8 +35,6 @@ public final class LiveChatAdapter extends RecyclerView.Adapter<LiveChatAdapter.
 
     private final List<LiveChatItem> items = new ArrayList<>();
     private final Set<String> seenIds = new LinkedHashSet<>();
-    private final SimpleDateFormat timeFormat =
-            new SimpleDateFormat("HH:mm", Locale.getDefault());
 
     /**
      * Appends the fresh items of one poll batch (deduplicated by message id
@@ -149,8 +144,8 @@ public final class LiveChatAdapter extends RecyclerView.Adapter<LiveChatAdapter.
 
             if (item.getTimestampUsec() > 0) {
                 binding.liveChatTime.setVisibility(View.VISIBLE);
-                binding.liveChatTime.setText(
-                        timeFormat.format(new Date(item.getTimestampUsec() / 1000L)));
+                // Formatted once at parse time (see LiveChatItem#getTimeText).
+                binding.liveChatTime.setText(item.getTimeText());
             } else {
                 binding.liveChatTime.setVisibility(View.GONE);
             }

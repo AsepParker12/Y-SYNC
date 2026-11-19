@@ -38,20 +38,27 @@ import okhttp3.ResponseBody;
  * visitor identity, so this client first establishes an anonymous session
  * the way YouTube.js does — one browser-like fetch of the homepage whose
  * server-issued cookies are kept and replayed, and whose page config
- * provides the session's client version and visitor data. The homepage's
- * embedded {@code ytInitialData} doubles as a candidate first page; when it
- * yields nothing, the first page is a {@code browse} request for
- * {@code FEwhat_to_watch} inside that session, and every following page is
- * a {@code browse} request holding only the continuation token of the
- * previous one. Visitor data of later responses is captured and sent
- * along, so YouTube keeps the feed session consistent.</p>
+ * provides the session's client version and visitor data. The session is
+ * then warmed up with one anonymous search, the way a real visitor has
+ * activity before recommendations attach. The homepage's embedded
+ * {@code ytInitialData} doubles as a candidate first page; when it yields
+ * nothing, the first page is a {@code browse} request for
+ * {@code FEwhat_to_watch} inside that session — and when even that comes
+ * back empty, one more {@code browse} as the Android client, whose home
+ * recommendations are attached more liberally. Every following page is a
+ * {@code browse} request holding only the continuation token of the
+ * previous one, sent with the client that produced the first page.
+ * Visitor data of later responses is captured and sent along, so YouTube
+ * keeps the feed session consistent.</p>
  *
  * <p>Videos are collected by walking the whole response tree: the classic
  * {@code videoRenderer} family (also {@code gridVideoRenderer} and
  * {@code compactVideoRenderer}, bare or wrapped in a
  * {@code richItemRenderer}) and the newer {@code lockupViewModel} items.
  * Shelves of other kinds (Shorts/reel shelves, ads, sections) are skipped.
- * Results are deduplicated by video id.</p>
+ * Results are deduplicated by video id. The same walk counts the renderer
+ * families it passes, so the failure diagnostics can show what a
+ * video-less response actually contained.</p>
  *
  * <p>All methods perform blocking network I/O and must be called off the
  * main thread. Instances are stateful (they hold the session) and are not
@@ -69,12 +76,40 @@ public final class HomeFeedClient {
     private static final String HOME_BROWSE_ID = "FEwhat_to_watch";
     private static final String LOCKUP_VIDEO_CONTENT_TYPE = "LOCKUP_CONTENT_TYPE_VIDEO";
 
+    // Public API key, client version and SDK level of the YouTube Android
+    // app, for the fallback browse route (the values open-source clients
+    // use for the Android InnerTube client).
+    private static final String ANDROID_API_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w";
+    private static final String ANDROID_CLIENT_VERSION = "20.10.38";
+    private static final int ANDROID_SDK_VERSION = 30;
+
+    // Renderer families counted in every parsed response, for the failure
+    // diagnostics: when a page yields no videos, the census shows what
+    // YouTube actually served instead. The labels are the short forms
+    // used in the diagnostic line.
+    private static final String[] CENSUS_KEYS = {
+        "videoRenderer", "gridVideoRenderer", "compactVideoRenderer",
+        "lockupViewModel", "richItemRenderer", "richSectionRenderer",
+        "richShelfRenderer", "reelItemRenderer", "shortsLockupViewModel",
+        "videoListItemViewModel"
+    };
+    private static final String[] CENSUS_LABELS = {
+        "video", "gridVideo", "compactVideo", "lockup", "richItem",
+        "richSection", "richShelf", "reel", "shortsLockup", "listItem"
+    };
+    private static final int CENSUS_VIDEO_INDEX = 0;
+    private static final int CENSUS_LOCKUP_INDEX = 3;
+
     private final Map<String, String> sessionCookies = new LinkedHashMap<>();
     private String clientVersion = FALLBACK_CLIENT_VERSION;
 
     @Nullable
     private String visitorData;
     private boolean sessionStarted;
+    private boolean sessionWarmedUp;
+    private boolean feedFromAndroid;
+    @NonNull
+    private String lastCensus = "";
     @Nullable
     private FeedPage bootstrappedPage;
     @Nullable
@@ -123,45 +158,93 @@ public final class HomeFeedClient {
 
     /**
      * Fetches the first page of the feed. The anonymous session is
-     * bootstrapped first (once per instance); the homepage's own
-     * {@code ytInitialData} is used when it already carries videos,
-     * otherwise the page comes from a session-backed {@code browse}
-     * request.
+     * bootstrapped and warmed up first (once per instance); the
+     * homepage's own {@code ytInitialData} is used when it already
+     * carries videos, otherwise the page comes from a session-backed
+     * {@code browse} request, with an Android-client {@code browse} as
+     * the last resort when the web session is served an empty home.
      */
     @NonNull
     public FeedPage fetchFirstPage() throws IOException {
         ensureSession();
+        warmUpSession();
         final FeedPage candidate = bootstrappedPage;
         bootstrappedPage = null;
         if (candidate != null && !candidate.getItems().isEmpty()) {
+            feedFromAndroid = false;
             lastFailureDetail = bootstrapDetail;
             return candidate;
         }
         lastHttpCode = -1;
+        final FeedPage page;
         try {
-            final FeedPage page = parsePage(postJson("browse", firstPageBody()));
-            lastFailureDetail = bootstrapDetail + "; browse: HTTP " + lastHttpCode
-                    + ", items=" + page.getItems().size()
-                    + ", visitor=" + (visitorData != null ? "yes" : "no");
-            if (page.getItems().isEmpty()) {
-                Log.w(TAG, "Home feed first page is empty: " + lastFailureDetail);
-            }
-            return page;
+            page = parsePage(postJson("browse", firstPageBody()));
         } catch (final IOException e) {
             lastFailureDetail = bootstrapDetail + "; browse: error"
                     + ", visitor=" + (visitorData != null ? "yes" : "no");
             Log.w(TAG, "Home feed browse failed: " + lastFailureDetail, e);
             throw e;
         }
+        final String webDetail = bootstrapDetail + "; browse: HTTP " + lastHttpCode
+                + ", items=" + page.getItems().size()
+                + ", visitor=" + (visitorData != null ? "yes" : "no");
+        if (!page.getItems().isEmpty()) {
+            feedFromAndroid = false;
+            lastFailureDetail = webDetail;
+            return page;
+        }
+        return fetchFirstPageFromAndroid(page, webDetail);
     }
 
     /**
-     * Fetches the next page of the feed, using a continuation token from a
-     * previous page and the session established by the bootstrap.
+     * Last first-page route: a {@code browse} for the home feed as the
+     * Android client, whose recommendations are attached more liberally
+     * than the web client's. When it yields videos, the whole feed
+     * session switches to that client (its continuations only make sense
+     * there); when it yields nothing either, its page is returned so the
+     * error screen can show the census of what was actually served; when
+     * it fails outright, the web page (equally empty) is returned
+     * instead, with the web response's census.
+     */
+    @NonNull
+    private FeedPage fetchFirstPageFromAndroid(@NonNull final FeedPage webPage,
+                                               @NonNull final String webDetail) {
+        final String webCensus = lastCensus;
+        lastHttpCode = -1;
+        try {
+            final FeedPage page = parsePage(
+                    postJsonAndroid("browse", androidFirstPageBody()));
+            feedFromAndroid = true;
+            lastFailureDetail = webDetail + "; android: HTTP " + lastHttpCode
+                    + ", items=" + page.getItems().size();
+            if (page.getItems().isEmpty()) {
+                lastFailureDetail += "; census: " + lastCensus;
+                Log.w(TAG, "Home feed first page is empty: " + lastFailureDetail);
+            }
+            return page;
+        } catch (final IOException e) {
+            Log.w(TAG, "Home feed Android browse failed", e);
+            feedFromAndroid = false;
+            lastFailureDetail = webDetail + "; android: error; census: " + webCensus;
+            Log.w(TAG, "Home feed first page is empty: " + lastFailureDetail);
+            return webPage;
+        }
+    }
+
+    /**
+     * Fetches the next page of the feed, using a continuation token from
+     * a previous page. The request goes to the client that produced the
+     * first page (the web session or the Android client), as a
+     * continuation only makes sense with the client that issued it.
      */
     @NonNull
     public FeedPage fetchNextPage(@NonNull final String continuationToken) throws IOException {
         ensureSession();
+        if (feedFromAndroid) {
+            final String body = "{" + androidContextJson()
+                    + ",\"continuation\":\"" + escapeJson(continuationToken) + "\"}";
+            return parsePage(postJsonAndroid("browse", body));
+        }
         final String body = "{" + contextJson()
                 + ",\"continuation\":\"" + escapeJson(continuationToken) + "\"}";
         return parsePage(postJson("browse", body));
@@ -170,6 +253,12 @@ public final class HomeFeedClient {
     @NonNull
     private String firstPageBody() {
         return "{" + contextJson()
+                + ",\"browseId\":\"" + HOME_BROWSE_ID + "\"}";
+    }
+
+    @NonNull
+    private String androidFirstPageBody() {
+        return "{" + androidContextJson()
                 + ",\"browseId\":\"" + HOME_BROWSE_ID + "\"}";
     }
 
@@ -229,6 +318,26 @@ public final class HomeFeedClient {
         } catch (final IOException e) {
             bootstrapDetail = "html: error";
             Log.w(TAG, "Home session bootstrap failed", e);
+        }
+    }
+
+    /**
+     * Warms the fresh session up with one anonymous search whose results
+     * are discarded. A real visitor session has activity before home
+     * recommendations attach to it; a completely cold session is served
+     * an empty home instead. Runs once per instance, inside the session
+     * established by the bootstrap (same cookies, visitor data and
+     * client version). A failed warm-up is not fatal.
+     */
+    private void warmUpSession() {
+        if (sessionWarmedUp) {
+            return;
+        }
+        sessionWarmedUp = true;
+        try {
+            postJson("search", "{" + contextJson() + ",\"query\":\"music\"}");
+        } catch (final IOException e) {
+            Log.w(TAG, "Home session warm-up failed", e);
         }
     }
 
@@ -356,8 +465,31 @@ public final class HomeFeedClient {
         final List<HomeFeedItem> items = new ArrayList<>();
         final Set<String> seen = new LinkedHashSet<>();
         final String[] continuation = new String[1];
-        collectFromTree(root, items, seen, continuation);
+        final int[] census = new int[CENSUS_KEYS.length];
+        collectFromTree(root, items, seen, continuation, census);
+        lastCensus = formatCensus(census);
         return new FeedPage(items, continuation[0]);
+    }
+
+    /**
+     * Formats a renderer census compactly for the failure diagnostics.
+     * Only the families that were actually served are listed, except the
+     * two headline ones (plain videos and lockups), which are always
+     * shown so that a zero there is visible instead of silent.
+     */
+    @NonNull
+    private static String formatCensus(@NonNull final int[] census) {
+        final StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < census.length; i++) {
+            if (census[i] == 0 && i != CENSUS_VIDEO_INDEX && i != CENSUS_LOCKUP_INDEX) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append(", ");
+            }
+            builder.append(CENSUS_LABELS[i]).append('=').append(census[i]);
+        }
+        return builder.toString();
     }
 
     /**
@@ -365,14 +497,22 @@ public final class HomeFeedClient {
      * continuation token. Item order follows the arrays of the response
      * (grids, shelves and continuation items all carry their entries in
      * arrays); the token of the last continuation item found wins, as grid
-     * continuations are emitted after the items they continue.
+     * continuations are emitted after the items they continue. The walk
+     * also counts the renderer families it passes into {@code census}
+     * (indexed by {@link #CENSUS_KEYS}), for the failure diagnostics.
      */
     private static void collectFromTree(@NonNull final Object node,
                                         @NonNull final List<HomeFeedItem> out,
                                         @NonNull final Set<String> seen,
-                                        @NonNull final String[] continuation) {
+                                        @NonNull final String[] continuation,
+                                        @NonNull final int[] census) {
         if (node instanceof JsonObject) {
             final JsonObject object = (JsonObject) node;
+            for (int i = 0; i < CENSUS_KEYS.length; i++) {
+                if (object.has(CENSUS_KEYS[i])) {
+                    census[i]++;
+                }
+            }
             JsonObject renderer = object.getObject("videoRenderer");
             if (renderer == null) {
                 renderer = object.getObject("gridVideoRenderer");
@@ -392,12 +532,12 @@ public final class HomeFeedClient {
                 continuation[0] = token;
             }
             for (final Object value : object.values()) {
-                collectFromTree(value, out, seen, continuation);
+                collectFromTree(value, out, seen, continuation, census);
             }
         } else if (node instanceof JsonArray) {
             final JsonArray array = (JsonArray) node;
             for (int i = 0; i < array.size(); i++) {
-                collectFromTree(array.get(i), out, seen, continuation);
+                collectFromTree(array.get(i), out, seen, continuation, census);
             }
         }
     }
@@ -741,6 +881,24 @@ public final class HomeFeedClient {
     }
 
     @NonNull
+    private String androidContextJson() {
+        final StringBuilder builder = new StringBuilder();
+        builder.append("\"context\":{\"client\":{\"clientName\":\"ANDROID\",")
+                .append("\"clientVersion\":\"")
+                .append(ANDROID_CLIENT_VERSION)
+                .append("\",\"androidSdkVersion\":")
+                .append(ANDROID_SDK_VERSION)
+                .append(",\"hl\":\"id\",\"gl\":\"ID\"");
+        if (visitorData != null) {
+            builder.append(",\"visitorData\":\"")
+                    .append(escapeJson(visitorData))
+                    .append("\"");
+        }
+        builder.append("}}");
+        return builder.toString();
+    }
+
+    @NonNull
     private static String escapeJson(@NonNull final String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
@@ -748,7 +906,6 @@ public final class HomeFeedClient {
     @NonNull
     private JsonObject postJson(@NonNull final String path, @NonNull final String body)
             throws IOException {
-        final OkHttpClient client = DownloaderImpl.getInstance().getClient();
         final Request.Builder builder = new Request.Builder()
                 .url(INNERTUBE_BASE_URL + path + "?key=" + API_KEY)
                 .post(RequestBody.create(body.getBytes(StandardCharsets.UTF_8)))
@@ -764,9 +921,38 @@ public final class HomeFeedClient {
         if (cookies != null) {
             builder.addHeader("Cookie", cookies);
         }
-        try (Response response = client.newCall(builder.build()).execute()) {
+        return doPost(builder.build(), path, true);
+    }
+
+    /**
+     * Posts as the Android client: its own public API key and client
+     * headers, and no web session cookies — the session's visitor data
+     * travels in the request context instead.
+     */
+    @NonNull
+    private JsonObject postJsonAndroid(@NonNull final String path, @NonNull final String body)
+            throws IOException {
+        final Request request = new Request.Builder()
+                .url(INNERTUBE_BASE_URL + path + "?key=" + ANDROID_API_KEY)
+                .post(RequestBody.create(body.getBytes(StandardCharsets.UTF_8)))
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-YouTube-Client-Name", "3")
+                .addHeader("X-YouTube-Client-Version", ANDROID_CLIENT_VERSION)
+                .addHeader("User-Agent", "com.google.android.youtube/"
+                        + ANDROID_CLIENT_VERSION + " (Linux; U; Android 11)")
+                .build();
+        return doPost(request, path, false);
+    }
+
+    @NonNull
+    private JsonObject doPost(@NonNull final Request request, @NonNull final String path,
+                              final boolean absorbResponseCookies) throws IOException {
+        final OkHttpClient client = DownloaderImpl.getInstance().getClient();
+        try (Response response = client.newCall(request).execute()) {
             lastHttpCode = response.code();
-            absorbCookies(response);
+            if (absorbResponseCookies) {
+                absorbCookies(response);
+            }
             final ResponseBody responseBody = response.body();
             if (!response.isSuccessful() || responseBody == null) {
                 throw new IOException("InnerTube request to " + path

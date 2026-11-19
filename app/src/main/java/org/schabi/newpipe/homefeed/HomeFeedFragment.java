@@ -42,6 +42,8 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
  */
 public final class HomeFeedFragment extends BaseFragment {
     private static final int LOAD_MORE_THRESHOLD = 4;
+    private static final int MAX_KEPT_ITEMS = 300;
+    private static final int TRIM_SAFE_FIRST_VISIBLE = 100;
     private static final int YOUTUBE_SERVICE_ID = 0;
     private static final long STALE_AFTER_MS = 15 * 60 * 1000L;
 
@@ -52,6 +54,7 @@ public final class HomeFeedFragment extends BaseFragment {
     private FragmentHomeFeedBinding binding;
     private HomeFeedAdapter adapter;
     private HomeFeedClient feedClient;
+    private LinearLayoutManager layoutManager;
 
     @Nullable
     private String continuationToken;
@@ -82,7 +85,7 @@ public final class HomeFeedFragment extends BaseFragment {
         feedClient = new HomeFeedClient();
 
         adapter = new HomeFeedAdapter();
-        final LinearLayoutManager layoutManager = new LinearLayoutManager(requireContext());
+        layoutManager = new LinearLayoutManager(requireContext());
         binding.homeFeedList.setLayoutManager(layoutManager);
         binding.homeFeedList.setAdapter(adapter);
         binding.homeFeedList.addOnScrollListener(new RecyclerView.OnScrollListener() {
@@ -199,11 +202,14 @@ public final class HomeFeedFragment extends BaseFragment {
                     if (binding == null) {
                         return;
                     }
-                    final int start = items.size();
                     final int added = appendItems(page.getItems());
                     continuationToken = page.getContinuationToken();
                     if (added > 0) {
-                        adapter.notifyItemRangeInserted(start, added);
+                        final int trimmed = trimOldItems();
+                        if (trimmed > 0) {
+                            adapter.notifyItemRangeRemoved(0, trimmed);
+                        }
+                        adapter.notifyItemRangeInserted(items.size() - added, added);
                     }
                 }, throwable -> {
                     loadingFeed = false;
@@ -221,6 +227,31 @@ public final class HomeFeedFragment extends BaseFragment {
             }
         }
         return added;
+    }
+
+    /**
+     * Bounds the endless feed's memory: once more than
+     * {@value #MAX_KEPT_ITEMS} items are loaded, the oldest ones are
+     * dropped from the front — but only while the user is far from the
+     * top, and never including the first visible item itself, so the
+     * current viewport is never disturbed.
+     *
+     * @return how many items were removed from the front of the list
+     */
+    private int trimOldItems() {
+        if (items.size() <= MAX_KEPT_ITEMS || layoutManager == null) {
+            return 0;
+        }
+        final int firstVisible = layoutManager.findFirstVisibleItemPosition();
+        if (firstVisible <= TRIM_SAFE_FIRST_VISIBLE) {
+            return 0;
+        }
+        final int trimCount = Math.min(items.size() - MAX_KEPT_ITEMS, firstVisible);
+        for (int i = 0; i < trimCount; i++) {
+            seenVideoIds.remove(items.get(i).getVideoId());
+        }
+        items.subList(0, trimCount).clear();
+        return trimCount;
     }
 
     private void openInPlayer(@NonNull final HomeFeedItem item) {

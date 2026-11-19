@@ -42,6 +42,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.webkit.WebView;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -61,6 +62,7 @@ import androidx.core.view.GravityCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.core.widget.NestedScrollView;
 import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.fragment.app.DialogFragment;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentContainerView;
 import androidx.fragment.app.FragmentManager;
@@ -68,7 +70,6 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 
-import eightbitlab.com.blurview.BlurView;
 import eightbitlab.com.blurview.RenderEffectBlur;
 
 import org.schabi.newpipe.databinding.ActivityMainBinding;
@@ -286,6 +287,22 @@ public class MainActivity extends AppCompatActivity {
         });
         getSupportFragmentManager().addOnBackStackChangedListener(
                 this::updateBottomNavVisibility);
+        // Y-SYNC: after a rotation the activity is recreated and the
+        // player fragment in fragment_player_holder is restored
+        // asynchronously; while it is missing, updateBottomNavVisibility
+        // cannot see a fullscreen player and shows the bar over the
+        // video — and no later event corrects that while the user just
+        // watches. Re-run the update once the player fragment resumes.
+        getSupportFragmentManager().registerFragmentLifecycleCallbacks(
+                new FragmentManager.FragmentLifecycleCallbacks() {
+                    @Override
+                    public void onFragmentResumed(@NonNull final FragmentManager fm,
+                                                  @NonNull final Fragment fragment) {
+                        if (fragment instanceof VideoDetailFragment) {
+                            updateBottomNavVisibility();
+                        }
+                    }
+                }, false);
         final BottomSheetBehavior<?> sheetBehavior =
                 BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
         playerSlideOffset = sheetOffsetForState(sheetBehavior.getState());
@@ -319,6 +336,38 @@ public class MainActivity extends AppCompatActivity {
 
     private final WeakHashMap<View, Boolean> topGlassPaddedViews = new WeakHashMap<>();
 
+    // Y-SYNC: guarded blur setup state (see ensureTopBlurSetup). The
+    // recorded size is the wrapper frame's size at the last setupWith.
+    private boolean topBlurReady;
+    private int topBlurSetupWidth;
+    private int topBlurSetupHeight;
+
+    /**
+     * Y-SYNC: runs the top bar's setupWith exactly once per wrapper size.
+     * A setup at measured size 0 (what the old post()-deferred call still
+     * hit: post() on an unattached view runs at attach time, before the
+     * first layout) puts BlurView's controller into its zero-size branch
+     * — willNotDraw, never initialised — and nothing ever set it up
+     * again, so the bar stayed plain until player geometry churn revived
+     * the library's own size-change realloc. Only set up when the frame
+     * is attached with a real size; re-setup happens solely through the
+     * layout-change trigger when the size actually changes.
+     */
+    private void ensureTopBlurSetup() {
+        if (topBlurReady || toolbarLayoutBinding == null) {
+            return;
+        }
+        final View frame = toolbarLayoutBinding.getRoot();
+        if (!frame.isAttachedToWindow() || frame.getWidth() <= 0
+                || frame.getHeight() <= 0) {
+            return;
+        }
+        setupTopBlur();
+        topBlurReady = true;
+        topBlurSetupWidth = frame.getWidth();
+        topBlurSetupHeight = frame.getHeight();
+    }
+
     private void setupTopBlur() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return;
@@ -334,7 +383,6 @@ public class MainActivity extends AppCompatActivity {
         // Y-SYNC: the top bar floats like the bottom bar — pill outline.
         // The outline/clip live on the wrapping frame (which also carries
         // the solid fallback background), not on the BlurView itself.
-        final BlurView topBlur = toolbarLayoutBinding.topBlur;
         final View topBarFrame = toolbarLayoutBinding.getRoot();
         final float radiusPx = 32 * getResources().getDisplayMetrics().density;
         topBarFrame.setOutlineProvider(new ViewOutlineProvider() {
@@ -344,13 +392,35 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         topBarFrame.setClipToOutline(true);
-        // Y-SYNC: set the blur up exactly ONCE, deferred until after the
-        // first layout. An immediate second setupWith() (the pre-hotfix
-        // behaviour) destroyed the first blur controller and discarded its
-        // render node, and a setup before layout ran at size 0 — both threw
-        // the bar back into the fragile no-valid-frame window on every
-        // cold start, where this GPU class composites garbage frames.
-        topBlur.post(this::setupTopBlur);
+        // Y-SYNC: guarded first-frame blur setup (see ensureTopBlurSetup):
+        // try right away, again at the first drawn frame (when the frame
+        // definitely has its real size), and again whenever the frame's
+        // size actually changes afterwards. Visibility flips never change
+        // the size (the bar hides with INVISIBLE), so they never retrigger
+        // a setup — no return of the setup-churn garbage frames.
+        topBarFrame.getViewTreeObserver().addOnPreDrawListener(
+                new ViewTreeObserver.OnPreDrawListener() {
+                    @Override
+                    public boolean onPreDraw() {
+                        if (topBarFrame.getViewTreeObserver().isAlive()) {
+                            topBarFrame.getViewTreeObserver()
+                                    .removeOnPreDrawListener(this);
+                        }
+                        ensureTopBlurSetup();
+                        return true;
+                    }
+                });
+        topBarFrame.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> {
+            final int width = right - left;
+            final int height = bottom - top;
+            if (width > 0 && height > 0
+                    && (width != topBlurSetupWidth || height != topBlurSetupHeight)) {
+                topBlurReady = false;
+                ensureTopBlurSetup();
+            }
+        });
+        ensureTopBlurSetup();
         getSupportFragmentManager().registerFragmentLifecycleCallbacks(
                 new FragmentManager.FragmentLifecycleCallbacks() {
                     @Override
@@ -364,6 +434,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyTopGlassPadding(final Fragment fragment, final View view) {
+        // Dialogs float in their own window above the screen: padding
+        // their first scroll view only leaves a dead gap at the top of
+        // the dialog (e.g. the playlist dialog), so they are skipped.
+        if (fragment instanceof DialogFragment) {
+            return;
+        }
         // The player sheet and the video detail page manage their own top
         // area. The same goes for everything hosted inside the detail page
         // (its tabs, e.g. the comments tab): the sheet covers the top bar
@@ -400,6 +476,29 @@ public class MainActivity extends AppCompatActivity {
             // second bar stacked behind it.
             applyTopGlassInset(view.findViewById(R.id.items_list), true);
             applyTopGlassInset(view.findViewById(R.id.suggestions_list), true);
+            return;
+        }
+        if (fragment instanceof FeedFragment) {
+            // The feed screen has a second top-anchored element besides
+            // its list: the refresh banner (refresh_root_view), which is
+            // not a scrolling view, so the generic path below never
+            // insets it — when it is visible it slides under the floating
+            // bar and its refresh icon pokes out at the bar's edge.
+            // Inset the banner as well as the list.
+            applyTopGlassInset(view.findViewById(R.id.refresh_root_view), false);
+            final View feedScrollView = findTopScrollView(view);
+            if (feedScrollView != null) {
+                applyTopGlassInset(feedScrollView, true);
+            }
+            return;
+        }
+        if (fragment instanceof MainFragment) {
+            // The main screen's tab strip is top-anchored and not a
+            // scrolling view either; with two or more configured tabs it
+            // would start under the floating bar. The pages inside its
+            // pager are separate fragments and get their own insets via
+            // their own view-created callbacks.
+            applyTopGlassInset(view.findViewById(R.id.main_tab_layout), false);
             return;
         }
         final View scrollView = findTopScrollView(view);
@@ -468,7 +567,7 @@ public class MainActivity extends AppCompatActivity {
             return view;
         }
         if (view instanceof ViewGroup) {
-            if (view.getClass().getName().contains("ViewPager2")) {
+            if (view.getClass().getName().contains("ViewPager")) {
                 return null;
             }
             final ViewGroup group = (ViewGroup) view;
@@ -533,6 +632,33 @@ public class MainActivity extends AppCompatActivity {
         toolbarLayoutBinding.toolbar.setNavigationIcon(tinted);
     }
 
+    // Y-SYNC: guarded blur setup state (see ensureBottomBlurSetup). The
+    // recorded size is the wrapper frame's size at the last setupWith.
+    private boolean bottomBlurReady;
+    private int bottomBlurSetupWidth;
+    private int bottomBlurSetupHeight;
+
+    /**
+     * Y-SYNC: runs the bottom bar's setupWith exactly once per wrapper
+     * size — the twin of {@link #ensureTopBlurSetup()}; see its javadoc
+     * for why a size-0 setup leaves the bar plain until a video
+     * round-trip revives it.
+     */
+    private void ensureBottomBlurSetup() {
+        if (bottomBlurReady || mainBinding == null) {
+            return;
+        }
+        final View frame = mainBinding.bottomBlurFrame;
+        if (!frame.isAttachedToWindow() || frame.getWidth() <= 0
+                || frame.getHeight() <= 0) {
+            return;
+        }
+        setupBottomBlurEffect();
+        bottomBlurReady = true;
+        bottomBlurSetupWidth = frame.getWidth();
+        bottomBlurSetupHeight = frame.getHeight();
+    }
+
     private void setupBottomBlur() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return;
@@ -547,11 +673,34 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         mainBinding.bottomBlurFrame.setClipToOutline(true);
-        // Y-SYNC: set the blur up exactly ONCE, deferred until after the
-        // first layout — same reasoning as for the top bar (see
-        // setupTopGlass): a double setupWith() and a size-0 setup kept
-        // throwing the bar into the no-valid-frame window on cold starts.
-        mainBinding.bottomBlur.post(this::setupBottomBlurEffect);
+        // Y-SYNC: guarded first-frame blur setup (see ensureTopBlurSetup):
+        // try right away, again at the first drawn frame, and again
+        // whenever the frame's size actually changes afterwards.
+        final View bottomBarFrame = mainBinding.bottomBlurFrame;
+        bottomBarFrame.getViewTreeObserver().addOnPreDrawListener(
+                new ViewTreeObserver.OnPreDrawListener() {
+                    @Override
+                    public boolean onPreDraw() {
+                        if (bottomBarFrame.getViewTreeObserver().isAlive()) {
+                            bottomBarFrame.getViewTreeObserver()
+                                    .removeOnPreDrawListener(this);
+                        }
+                        ensureBottomBlurSetup();
+                        return true;
+                    }
+                });
+        bottomBarFrame.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> {
+            final int width = right - left;
+            final int height = bottom - top;
+            if (width > 0 && height > 0
+                    && (width != bottomBlurSetupWidth
+                            || height != bottomBlurSetupHeight)) {
+                bottomBlurReady = false;
+                ensureBottomBlurSetup();
+            }
+        });
+        ensureBottomBlurSetup();
     }
 
     private void setupBottomBlurEffect() {
@@ -717,7 +866,15 @@ public class MainActivity extends AppCompatActivity {
                 bottomPadding += behavior.getPeekHeight();
             }
         }
-        mainBinding.fragmentHolder.setPadding(0, 0, 0, bottomPadding);
+        // Y-SYNC: single owner for the holder's bottom padding. While a
+        // player fragment is attached, VideoDetailFragment owns this
+        // padding via manageSpaceAtTheBottom(); both sides writing it
+        // (as before) made the result depend on which event landed last,
+        // so after rotation the states disagreed. Only write it when no
+        // player fragment exists.
+        if (playerFragment == null) {
+            mainBinding.fragmentHolder.setPadding(0, 0, 0, bottomPadding);
+        }
         if (current instanceof MainFragment) {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_home).setChecked(true);
         } else if (current instanceof FeedFragment) {
@@ -744,6 +901,33 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         updateTopBarStyle(false);
+    }
+
+    /**
+     * Y-SYNC: delayed re-check after onResume (see onResume). By the time
+     * it runs, a recreated activity has its fragments restored: re-read
+     * the player sheet's settled state (rotation could have left
+     * playerSlideOffset stale — MainActivity initialised it from the XML
+     * default state), make sure both bars got their guarded first-frame
+     * blur setup, and re-run the visibility update, whose fullscreen rule
+     * now reads the restored player fragment — so a fullscreen video
+     * after rotation hides the bar again instead of leaving it drawn
+     * over the video.
+     */
+    private void recheckBarsAfterResume() {
+        if (mainBinding == null) {
+            return;
+        }
+        ensureTopBlurSetup();
+        ensureBottomBlurSetup();
+        final BottomSheetBehavior<?> behavior =
+                BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
+        final int sheetState = behavior.getState();
+        if (sheetState != BottomSheetBehavior.STATE_DRAGGING
+                && sheetState != BottomSheetBehavior.STATE_SETTLING) {
+            playerSlideOffset = sheetOffsetForState(sheetState);
+        }
+        updateBottomNavVisibility();
     }
 
     private void setupDrawer() throws ExtractionException {
@@ -1045,7 +1229,7 @@ public class MainActivity extends AppCompatActivity {
         updateBottomNavVisibility();
         // Rotation recreates the activity and the sheet state can settle
         // after onResume; re-check once everything has landed.
-        mainBinding.bottomNav.postDelayed(this::updateBottomNavVisibility, 400);
+        mainBinding.bottomNav.postDelayed(this::recheckBarsAfterResume, 400);
 
         // Close drawer on return, and don't show animation,
         // so it looks like the drawer isn't open when the user returns to MainActivity

@@ -15,9 +15,12 @@ import org.schabi.newpipe.MainActivity;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -54,6 +57,11 @@ public final class LiveChatClient {
     private static final long DEFAULT_TIMEOUT_MS = 5000L;
     private static final long MIN_TIMEOUT_MS = 1000L;
     private static final long MAX_TIMEOUT_MS = 30000L;
+
+    // SimpleDateFormat is not thread-safe, hence the ThreadLocal.
+    private static final ThreadLocal<SimpleDateFormat> TIME_FORMAT =
+            ThreadLocal.withInitial(
+                    () -> new SimpleDateFormat("HH:mm", Locale.getDefault()));
 
     /**
      * An {@link IOException} that also carries the HTTP status code, so the
@@ -378,10 +386,23 @@ public final class LiveChatClient {
             }
         }
 
+        final long timestampUsec = getTimestampUsec(renderer);
         return new LiveChatItem(id, authorName, channelId == null ? "" : channelId,
-                messageText, getAuthorPhotoUrl(renderer), getTimestampUsec(renderer),
-                type, paidAmountText, paidBackgroundColor, superSticker,
-                owner, moderator, verified, member);
+                messageText, getAuthorPhotoUrl(renderer), timestampUsec,
+                formatTimeText(timestampUsec), type, paidAmountText,
+                paidBackgroundColor, superSticker, owner, moderator, verified, member);
+    }
+
+    /**
+     * Formats a message timestamp for the row's time label, once at parse
+     * time, so the adapter never formats dates while binding rows.
+     */
+    @NonNull
+    private static String formatTimeText(final long timestampUsec) {
+        if (timestampUsec <= 0) {
+            return "";
+        }
+        return TIME_FORMAT.get().format(new Date(timestampUsec / 1000L));
     }
 
     /**

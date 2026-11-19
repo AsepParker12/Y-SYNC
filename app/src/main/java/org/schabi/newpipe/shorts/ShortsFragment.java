@@ -75,6 +75,13 @@ public final class ShortsFragment extends BaseFragment {
     // Fragment argument marking that this instance was opened on a seed
     // (see ShortsSeed) rather than on the endless feed.
     private static final String ARG_SEEDED = "seeded";
+    // Saved-state keys for a seeded list: the seed's page loader cannot be
+    // saved, but the items loaded so far and the position can, so a
+    // recreation resumes the seeded list instead of the generic feed.
+    private static final String STATE_SEEDED = "seeded_state";
+    private static final String STATE_SEEDED_VIDEO_IDS = "seeded_video_ids";
+    private static final String STATE_SEEDED_THUMBNAILS = "seeded_thumbnails";
+    private static final String STATE_SEEDED_POSITION = "seeded_position";
 
     private final List<ShortsItem> items = new ArrayList<>();
     private final Set<String> seenVideoIds = new HashSet<>();
@@ -177,7 +184,7 @@ public final class ShortsFragment extends BaseFragment {
         }
         if (!items.isEmpty()) {
             binding.shortsLoading.setVisibility(View.GONE);
-        } else if (!startFromSeed()) {
+        } else if (!restoreSeededState(savedInstanceState) && !startFromSeed()) {
             loadFirstPage();
         }
     }
@@ -210,6 +217,71 @@ public final class ShortsFragment extends BaseFragment {
     }
 
     @Override
+    public void onSaveInstanceState(@NonNull final Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (!seededMode || items.isEmpty()) {
+            return;
+        }
+        // The seed itself cannot be saved (its page loader is a callback),
+        // but the items loaded so far and the position can: after a
+        // recreation the pager resumes on them instead of silently
+        // dropping into the generic feed. Titles and uploader names are
+        // not saved; the resolver fills them in again as the shorts
+        // around the restored position are resolved.
+        final ArrayList<String> videoIds = new ArrayList<>(items.size());
+        final ArrayList<String> thumbnails = new ArrayList<>(items.size());
+        for (final ShortsItem item : items) {
+            videoIds.add(item.getVideoId());
+            thumbnails.add(item.getThumbnailUrl() == null ? "" : item.getThumbnailUrl());
+        }
+        outState.putBoolean(STATE_SEEDED, true);
+        outState.putStringArrayList(STATE_SEEDED_VIDEO_IDS, videoIds);
+        outState.putStringArrayList(STATE_SEEDED_THUMBNAILS, thumbnails);
+        outState.putInt(STATE_SEEDED_POSITION, currentPosition);
+    }
+
+    /**
+     * Restores a seeded list saved by {@link #onSaveInstanceState}. The
+     * restored list is static: the seed's page loader does not survive
+     * recreation, so the pager ends at the last restored item instead of
+     * paging further through the channel's shorts.
+     */
+    private boolean restoreSeededState(@Nullable final Bundle savedInstanceState) {
+        if (savedInstanceState == null
+                || !savedInstanceState.getBoolean(STATE_SEEDED, false)) {
+            return false;
+        }
+        final ArrayList<String> videoIds =
+                savedInstanceState.getStringArrayList(STATE_SEEDED_VIDEO_IDS);
+        if (videoIds == null || videoIds.isEmpty()) {
+            return false;
+        }
+        final ArrayList<String> thumbnails =
+                savedInstanceState.getStringArrayList(STATE_SEEDED_THUMBNAILS);
+        seededMode = true;
+        seedPageLoader = null;
+        seedExhausted = true;
+        final List<ShortsItem> restored = new ArrayList<>(videoIds.size());
+        for (int i = 0; i < videoIds.size(); i++) {
+            String thumbnail = null;
+            if (thumbnails != null && i < thumbnails.size()
+                    && !thumbnails.get(i).isEmpty()) {
+                thumbnail = thumbnails.get(i);
+            }
+            restored.add(new ShortsItem(videoIds.get(i), thumbnail));
+        }
+        appendItems(restored);
+        binding.shortsLoading.setVisibility(View.GONE);
+        currentPosition = Math.min(Math.max(
+                savedInstanceState.getInt(STATE_SEEDED_POSITION, 0), 0),
+                items.size() - 1);
+        binding.shortsPager.setCurrentItem(currentPosition, false);
+        syncPlayerPool();
+        prefetchAhead();
+        return true;
+    }
+
+    @Override
     public void onResume() {
         super.onResume();
         fragmentResumed = true;
@@ -219,12 +291,37 @@ public final class ShortsFragment extends BaseFragment {
     @Override
     public void onPause() {
         fragmentResumed = false;
-        for (final ExoPlayer player : playerPool) {
-            if (player != null) {
-                player.setPlayWhenReady(false);
-            }
+        stopNonCurrentPlayers();
+        final ExoPlayer currentPlayer = playerForPosition(currentPosition);
+        if (currentPlayer != null) {
+            currentPlayer.setPlayWhenReady(false);
         }
         super.onPause();
+    }
+
+    /**
+     * Stops every pool player except the one showing the current short.
+     * A prepared player holds on to its MediaCodec; with the whole pool
+     * prepared plus the (paused) main player, a device with few hardware
+     * codecs runs out of them and the next playback fails with a decoder
+     * error. {@code stop()} releases the codec while keeping the player
+     * reusable — {@link #syncPlayerPool()} calls {@code prepare()} again
+     * before such a player is played. The current player is only paused,
+     * never stopped here, so returning to this screen resumes it at once.
+     */
+    private void stopNonCurrentPlayers() {
+        final int currentSlot = slotForPosition(currentPosition);
+        for (int slot = 0; slot < PLAYER_POOL_SIZE; slot++) {
+            if (playerPool[slot] == null || slot == currentSlot) {
+                continue;
+            }
+            playerPool[slot].stop();
+            if (playerVideoIds[slot] != null) {
+                // The stopped player shows its thumbnail again until its
+                // first frame is rendered after the re-prepare.
+                renderedVideoIds.remove(playerVideoIds[slot]);
+            }
+        }
     }
 
     @Override
@@ -458,6 +555,12 @@ public final class ShortsFragment extends BaseFragment {
                 }
             }
             if (playerPool[slot] != null) {
+                if (playerPool[slot].getPlaybackState() == Player.STATE_IDLE) {
+                    // The player was stop()ed (see stopNonCurrentPlayers):
+                    // its codec is released, so it must be prepared again
+                    // before it can play its (still set) media source.
+                    playerPool[slot].prepare();
+                }
                 playerPool[slot].setPlayWhenReady(position == currentPosition
                         && fragmentResumed && !userPaused);
             }
@@ -642,6 +745,8 @@ public final class ShortsFragment extends BaseFragment {
         // main player state when this screen is closed afterwards.
         openedInFullPlayer = true;
         userPaused = true;
+        // Free the pool's codecs for the full player, exactly like onPause.
+        stopNonCurrentPlayers();
         final ExoPlayer player = playerForPosition(currentPosition);
         if (player != null) {
             player.setPlayWhenReady(false);
