@@ -377,7 +377,9 @@ public final class ThemeHelper {
             if (useGrid) {
                 result = ItemViewMode.GRID;
             } else {
-                result = ItemViewMode.LIST;
+                // Y-SYNC: Auto means big YouTube-style cards in portrait
+                // (upstream resolved this to the small LIST rows).
+                result = ItemViewMode.CARD;
             }
         }
         return result;
