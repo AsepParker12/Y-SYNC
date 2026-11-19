@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish GitHub Release v1.15.0"
+        description: "Publish GitHub Release v1.16.0"
         type: boolean
         default: false
 
@@ -51,31 +51,33 @@ jobs:
             --ks-key-alias ysync \
             --ks-pass env:KEYSTORE_PASSWORD \
             --key-pass env:KEYSTORE_PASSWORD \
-            --out Y-SYNC-1.15.0.apk aligned.apk
-          "$BT/apksigner" verify --print-certs Y-SYNC-1.15.0.apk
-          sha256sum Y-SYNC-1.15.0.apk > Y-SYNC-1.15.0.apk.sha256
-          ls -lh Y-SYNC-1.15.0.apk
+            --out Y-SYNC-1.16.0.apk aligned.apk
+          "$BT/apksigner" verify --print-certs Y-SYNC-1.16.0.apk
+          sha256sum Y-SYNC-1.16.0.apk > Y-SYNC-1.16.0.apk.sha256
+          ls -lh Y-SYNC-1.16.0.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Y-SYNC-1.15.0
+          name: Y-SYNC-1.16.0
           path: |
-            Y-SYNC-1.15.0.apk
-            Y-SYNC-1.15.0.apk.sha256
+            Y-SYNC-1.16.0.apk
+            Y-SYNC-1.16.0.apk.sha256
 
       - name: Publish GitHub Release
         if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.15.0
-          name: Y-SYNC v1.15.0
+          tag_name: v1.16.0
+          name: Y-SYNC v1.16.0
           files: |
-            Y-SYNC-1.15.0.apk
-            Y-SYNC-1.15.0.apk.sha256
+            Y-SYNC-1.16.0.apk
+            Y-SYNC-1.16.0.apk.sha256
           body: |
-            **Y-SYNC 1.15.0** — Hotfix round: Beranda loads again, the bars behave on every screen, and channel Shorts open in the swipe feed. Free and open source (GPL-3.0).
+            **Y-SYNC 1.16.0** — Live chat is here, and Beranda gets a real visitor session. Free and open source (GPL-3.0).
 
+            - New: Live chat — watching a livestream now has a Live Chat tab (first tab on the watch page): messages flow in at the server's own pace, Super Chats are highlighted, owner/moderator/member names are coloured, and the list stays light even in very busy chats
+            - Fixed: Beranda failed to load — the home feed now first establishes a real visitor session (server cookies + visitor data + the current client version, like a browser) and reads YouTube's newer item formats too; if it ever fails again, the error screen now shows a short reason line
             - Fixed: Beranda failed to load ("Gagal memuat Beranda") — the home feed now loads through the route YouTube serves to logged-out visitors, and its texts come back in Indonesian
             - Fixed: the bottom bar could flash bright lime green and lose its blur/floating look on startup — the blur is now set up once and the bar degrades to a solid pill instead of a corrupt frame
             - Fixed: a flat green strip could appear where the mini player sits — the mini player shows the thumbnail until the video's first frame actually renders
@@ -107,4 +109,4 @@ jobs:
             - Background playback, popup/PiP player, downloads up to 4K
             - Local subscriptions and history — no Google account needed
 
-            Install: download `Y-SYNC-1.15.0.apk` below and open it on your Android phone.
+            Install: download `Y-SYNC-1.16.0.apk` below and open it on your Android phone.
