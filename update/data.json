@@ -1,9 +1,9 @@
 {
   "flavors": {
     "ysync": {
-      "version": "1.8.0",
-      "version_code": 10,
-      "apk": "https://github.com/AsepParker12/Y-SYNC/releases/download/v1.8.0/Y-SYNC-1.8.0.apk"
+      "version": "1.9.0",
+      "version_code": 11,
+      "apk": "https://github.com/AsepParker12/Y-SYNC/releases/download/v1.9.0/Y-SYNC-1.9.0.apk"
     }
   }
 }
