@@ -313,9 +313,18 @@ public class MainActivity extends AppCompatActivity {
     private final WeakHashMap<View, Boolean> topGlassPaddedViews = new WeakHashMap<>();
 
     private void setupTopGlass() {
+        // Y-SYNC: the top bar floats like the bottom bar — pill outline.
+        final BlurView topBlur = (BlurView) toolbarLayoutBinding.getRoot();
+        final float radiusPx = 32 * getResources().getDisplayMetrics().density;
+        topBlur.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(final View view, final Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
+            }
+        });
+        topBlur.setClipToOutline(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ((BlurView) toolbarLayoutBinding.getRoot())
-                    .setupWith(mainBinding.getRoot(), new RenderEffectBlur())
+            topBlur.setupWith(mainBinding.getRoot(), new RenderEffectBlur())
                     .setFrameClearDrawable(ContextCompat.getDrawable(this,
                             R.drawable.glass_nav_tint))
                     .setBlurRadius(18f);
@@ -345,7 +354,8 @@ public class MainActivity extends AppCompatActivity {
         final TypedValue typedValue = new TypedValue();
         getTheme().resolveAttribute(android.R.attr.actionBarSize, typedValue, true);
         final int topInset = TypedValue.complexToDimensionPixelSize(typedValue.data,
-                getResources().getDisplayMetrics());
+                getResources().getDisplayMetrics())
+                + Math.round(18 * getResources().getDisplayMetrics().density);
         scrollView.setPadding(scrollView.getPaddingLeft(),
                 scrollView.getPaddingTop() + topInset,
                 scrollView.getPaddingRight(), scrollView.getPaddingBottom());
