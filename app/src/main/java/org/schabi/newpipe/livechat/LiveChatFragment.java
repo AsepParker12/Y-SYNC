@@ -147,6 +147,11 @@ public final class LiveChatFragment extends BaseFragment {
         layoutManager = new LinearLayoutManager(requireContext());
         binding.liveChatList.setLayoutManager(layoutManager);
         binding.liveChatList.setAdapter(adapter);
+        // Y-SYNC: the chat list must never collapse the detail page's app
+        // bar: with nested scrolling off, scrolling the chat leaves the
+        // video on top (YouTube behaviour), while the detail page's other
+        // tabs keep the stock collapsing bar.
+        binding.liveChatList.setNestedScrollingEnabled(false);
         binding.liveChatList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull final RecyclerView recyclerView,

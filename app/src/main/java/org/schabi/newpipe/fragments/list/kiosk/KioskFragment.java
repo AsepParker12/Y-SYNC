@@ -70,6 +70,10 @@ public class KioskFragment extends BaseListInfoFragment<StreamInfoItem, KioskInf
         super(UserAction.REQUESTED_KIOSK);
     }
 
+    public String getKioskId() {
+        return kioskId;
+    }
+
     /*//////////////////////////////////////////////////////////////////////////
     // LifeCycle
     //////////////////////////////////////////////////////////////////////////*/

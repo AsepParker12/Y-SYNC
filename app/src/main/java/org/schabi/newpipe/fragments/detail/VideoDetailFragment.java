@@ -173,11 +173,6 @@ public final class VideoDetailFragment
     // tabs
     @Nullable
     private String liveChatVideoId;
-    // Y-SYNC: while the live chat tab is selected, the app bar is pinned
-    // expanded so the video stays on top (see updateChatVideoPin); these
-    // remember the pin state and the scroll flags to restore afterwards.
-    private boolean appBarPinnedForChat;
-    private int appBarScrollFlagsBeforePin;
     private boolean showComments;
     private boolean showRelatedItems;
     private boolean showDescription;
@@ -473,12 +468,6 @@ public final class VideoDetailFragment
         // card: the player UI outlives this view (e.g. on rotation) and
         // would lose its surface view with the destroyed hierarchy.
         detachSurfaceFromMiniPlayer();
-        // Y-SYNC: forget the chat video pin: the app bar is destroyed
-        // with this view, a recreated one inflates the XML scroll flags
-        // again, and updateChatVideoPin() re-evaluates on the new
-        // hierarchy — restoring the saved flags here would write them
-        // into a dying view for nothing.
-        appBarPinnedForChat = false;
         super.onDestroyView();
         binding = null;
     }
@@ -671,8 +660,8 @@ public final class VideoDetailFragment
         pageAdapter = new TabAdapter(getChildFragmentManager());
         binding.viewPager.setAdapter(pageAdapter);
         binding.tabLayout.setupWithViewPager(binding.viewPager);
-        // Y-SYNC: keep the video pinned on top while the live chat tab
-        // is selected (see updateChatVideoPin).
+        // Y-SYNC: keep the video on top while the live chat tab is
+        // selected (see updateChatVideoPin).
         binding.viewPager.addOnPageChangeListener(new ViewPager.SimpleOnPageChangeListener() {
             @Override
             public void onPageSelected(final int position) {
@@ -1009,7 +998,7 @@ public final class VideoDetailFragment
         // Y-SYNC: a rebuild does not always change the selected page (so
         // no page-selected callback fires) — e.g. navigating from a
         // livestream to a normal video keeps position 0 while the chat
-        // tab disappears. Re-evaluate the chat video pin explicitly.
+        // tab disappears. Re-evaluate the chat video expansion explicitly.
         updateChatVideoPin();
     }
 
@@ -1078,15 +1067,17 @@ public final class VideoDetailFragment
     }
 
     /**
-     * Y-SYNC: while the live chat tab is selected, the video stays pinned
-     * on top and the chat scrolls beneath it (YouTube behaviour). With
-     * the stock collapsing app bar, scrolling the chat list scrolls the
-     * video away and there is no way back short of reopening the stream.
-     * Pinning clears the collapsing child's scroll flags (after saving
-     * them) and expands the bar; switching to any other tab restores the
-     * saved flags exactly. The flags only gate nested-scroll collapsing,
-     * so fullscreen/landscape (where the tabs are hidden) are unaffected,
-     * and nothing here touches the sheet state or the holder padding.
+     * Y-SYNC: while the live chat tab is selected, the video stays on
+     * top and the chat scrolls beneath it (YouTube behaviour). Expanding
+     * the app bar once is all it takes: the chat list has nested
+     * scrolling disabled (see LiveChatFragment), so scrolling it never
+     * collapses the bar. An earlier version pinned the bar by clearing
+     * the collapsing child's scroll flags, but that zeroed the app
+     * bar's total scroll range — the term the scrolling-view behaviour
+     * adds when measuring the pager — which collapsed the pager to a
+     * sliver and left the chat page a few dozen pixels tall. Other tabs
+     * keep the stock collapsing behaviour, and nothing here touches the
+     * sheet state or the holder padding.
      */
     private void updateChatVideoPin() {
         if (binding == null || pageAdapter == null) {
@@ -1095,49 +1086,8 @@ public final class VideoDetailFragment
         final boolean chatSelected = LIVE_CHAT_TAB_TAG.equals(
                 pageAdapter.getItemTitle(binding.viewPager.getCurrentItem()));
         if (chatSelected) {
-            pinAppBarForChat();
-        } else {
-            unpinAppBarForChat();
+            binding.appBarLayout.setExpanded(true, true);
         }
-    }
-
-    private void pinAppBarForChat() {
-        if (appBarPinnedForChat) {
-            return;
-        }
-        final AppBarLayout.LayoutParams params = getAppBarChildLayoutParams();
-        if (params == null) {
-            return;
-        }
-        appBarScrollFlagsBeforePin = params.getScrollFlags();
-        params.setScrollFlags(AppBarLayout.LayoutParams.SCROLL_FLAG_NO_SCROLL);
-        binding.appBarLayout.getChildAt(0).setLayoutParams(params);
-        appBarPinnedForChat = true;
-        binding.appBarLayout.setExpanded(true, true);
-    }
-
-    private void unpinAppBarForChat() {
-        if (!appBarPinnedForChat) {
-            return;
-        }
-        appBarPinnedForChat = false;
-        final AppBarLayout.LayoutParams params = getAppBarChildLayoutParams();
-        if (params == null) {
-            return;
-        }
-        params.setScrollFlags(appBarScrollFlagsBeforePin);
-        binding.appBarLayout.getChildAt(0).setLayoutParams(params);
-    }
-
-    @Nullable
-    private AppBarLayout.LayoutParams getAppBarChildLayoutParams() {
-        if (binding == null || binding.appBarLayout.getChildCount() == 0) {
-            return null;
-        }
-        final ViewGroup.LayoutParams layoutParams =
-                binding.appBarLayout.getChildAt(0).getLayoutParams();
-        return layoutParams instanceof AppBarLayout.LayoutParams
-                ? (AppBarLayout.LayoutParams) layoutParams : null;
     }
 
     private boolean shouldShowComments() {

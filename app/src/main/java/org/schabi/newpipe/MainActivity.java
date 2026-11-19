@@ -70,8 +70,6 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 
-import eightbitlab.com.blurview.RenderEffectBlur;
-
 import org.schabi.newpipe.databinding.ActivityMainBinding;
 import org.schabi.newpipe.databinding.DrawerHeaderBinding;
 import org.schabi.newpipe.databinding.DrawerLayoutBinding;
@@ -92,6 +90,7 @@ import org.schabi.newpipe.local.feed.FeedFragment;
 import org.schabi.newpipe.local.subscription.SubscriptionFragment;
 import org.schabi.newpipe.fragments.detail.VideoDetailFragment;
 import org.schabi.newpipe.fragments.list.comments.CommentRepliesFragment;
+import org.schabi.newpipe.fragments.list.kiosk.KioskFragment;
 import org.schabi.newpipe.fragments.list.search.SearchFragment;
 import org.schabi.newpipe.local.feed.notifications.NotificationWorker;
 import org.schabi.newpipe.player.Player;
@@ -111,6 +110,7 @@ import org.schabi.newpipe.util.PermissionHelper;
 import org.schabi.newpipe.util.ReleaseVersionUtil;
 import org.schabi.newpipe.util.SerializedCache;
 import org.schabi.newpipe.util.ServiceHelper;
+import org.schabi.newpipe.util.StackBlurAlgorithm;
 import org.schabi.newpipe.util.StateSaver;
 import org.schabi.newpipe.util.ThemeHelper;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
@@ -373,7 +373,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         toolbarLayoutBinding.topBlur
-                .setupWith(mainBinding.getRoot(), new RenderEffectBlur())
+                .setupWith(mainBinding.getRoot(), new StackBlurAlgorithm())
                 .setFrameClearDrawable(ContextCompat.getDrawable(this,
                         R.drawable.glass_nav_tint))
                 .setBlurRadius(18f);
@@ -707,7 +707,7 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return;
         }
-        mainBinding.bottomBlur.setupWith(mainBinding.getRoot(), new RenderEffectBlur())
+        mainBinding.bottomBlur.setupWith(mainBinding.getRoot(), new StackBlurAlgorithm())
                 .setFrameClearDrawable(ContextCompat.getDrawable(this,
                         R.drawable.glass_nav_tint))
                 .setBlurRadius(18f);
@@ -745,10 +745,19 @@ public class MainActivity extends AppCompatActivity {
                 fm.popBackStackImmediate(NavigationHelper.MAIN_FRAGMENT_TAG, 0);
                 NavigationHelper.openFeedFragment(fm);
             }
-        } else if (itemId == R.id.nav_subscriptions) {
-            if (!(current instanceof SubscriptionFragment)) {
+        } else if (itemId == R.id.nav_live) {
+            // Y-SYNC: the third tab is the Live kiosk (Subscriptions moved
+            // to the drawer). Same destination the drawer's Live entry
+            // opens; already being on it is not a reselection-worthy
+            // reason to reload it.
+            if (!(current instanceof KioskFragment)
+                    || !"live".equals(((KioskFragment) current).getKioskId())) {
                 fm.popBackStackImmediate(NavigationHelper.MAIN_FRAGMENT_TAG, 0);
-                NavigationHelper.openSubscriptionFragment(fm);
+                try {
+                    NavigationHelper.openKioskFragment(fm, 0, "live");
+                } catch (final ExtractionException e) {
+                    ErrorUtil.showUiErrorSnackbar(this, "Selecting live kiosk", e);
+                }
             }
         } else if (itemId == R.id.nav_bookmarks) {
             if (!(current instanceof BookmarkFragment)) {
@@ -790,7 +799,8 @@ public class MainActivity extends AppCompatActivity {
         final boolean topLevel = current == null || current instanceof MainFragment
                 || current instanceof FeedFragment
                 || current instanceof SubscriptionFragment
-                || current instanceof BookmarkFragment;
+                || current instanceof BookmarkFragment
+                || current instanceof KioskFragment;
         final BottomSheetBehavior<?> behavior =
                 BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
         final int sheetState = behavior.getState();
@@ -879,9 +889,17 @@ public class MainActivity extends AppCompatActivity {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_home).setChecked(true);
         } else if (current instanceof FeedFragment) {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_feed).setChecked(true);
+        } else if (current instanceof KioskFragment
+                && "live".equals(((KioskFragment) current).getKioskId())) {
+            mainBinding.bottomNav.getMenu().findItem(R.id.nav_live).setChecked(true);
         } else if (current instanceof SubscriptionFragment) {
-            mainBinding.bottomNav.getMenu().findItem(R.id.nav_subscriptions)
-                    .setChecked(true);
+            // Y-SYNC: Subscriptions is a drawer destination now and has no
+            // bottom bar item. Clear the checked state instead of leaving
+            // a stale tab selected: a still-checked tab would swallow the
+            // user's next tap on it as a reselection and go nowhere.
+            for (int i = 0; i < mainBinding.bottomNav.getMenu().size(); i++) {
+                mainBinding.bottomNav.getMenu().getItem(i).setChecked(false);
+            }
         } else if (current instanceof BookmarkFragment) {
             mainBinding.bottomNav.getMenu().findItem(R.id.nav_bookmarks).setChecked(true);
         }
