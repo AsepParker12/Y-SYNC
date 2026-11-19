@@ -283,6 +283,14 @@
     <string name="detail_likes_img_view_description">Likes</string>
     <string name="detail_dislikes_img_view_description">Dislikes</string>
     <string name="comments_tab_description">Comments</string>
+    <string name="live_chat_tab_description">Live chat</string>
+    <string name="live_chat_not_available">Live chat is not available for this stream</string>
+    <string name="live_chat_replay_not_supported">Live chat replay is not supported yet</string>
+    <string name="live_chat_ended">Live chat has ended</string>
+    <string name="live_chat_load_error">Could not load live chat</string>
+    <string name="live_chat_message_deleted">Message deleted</string>
+    <string name="live_chat_jump_to_latest">Jump to latest</string>
+    <string name="live_chat_super_sticker_message">[Super Sticker] %1$s</string>
     <string name="related_items_tab_description">Related items</string>
     <string name="description_tab_description">Description</string>
     <string name="search_no_results">No results</string>

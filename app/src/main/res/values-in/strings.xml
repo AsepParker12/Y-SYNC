@@ -530,6 +530,14 @@
     <string name="description_tab_description">Deskripsi</string>
     <string name="related_items_tab_description">Item terkait</string>
     <string name="comments_tab_description">Komentar</string>
+    <string name="live_chat_tab_description">Obrolan langsung</string>
+    <string name="live_chat_not_available">Obrolan langsung tidak tersedia untuk siaran ini</string>
+    <string name="live_chat_replay_not_supported">Putar ulang obrolan langsung belum didukung</string>
+    <string name="live_chat_ended">Obrolan langsung telah berakhir</string>
+    <string name="live_chat_load_error">Tidak dapat memuat obrolan langsung</string>
+    <string name="live_chat_message_deleted">Pesan dihapus</string>
+    <string name="live_chat_jump_to_latest">Ke pesan terbaru</string>
+    <string name="live_chat_super_sticker_message">[Stiker Super] %1$s</string>
     <string name="show_description_summary">Nonaktifkan untuk menyembunyikan deskripsi dan informasi tambahan</string>
     <string name="show_description_title">Tampilkan deskripsi</string>
     <string name="open_with">Buka dengan</string>

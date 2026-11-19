@@ -90,6 +90,12 @@
 
     <color name="black">#000</color>
 
+    <!-- Live chat author name colours (badge roles) -->
+    <color name="live_chat_author_default">#FF616161</color>
+    <color name="live_chat_author_owner">#FFF9A825</color>
+    <color name="live_chat_author_moderator">#FF5E84F1</color>
+    <color name="live_chat_author_member">#FF2BA640</color>
+
     <color name="ysync_lock_bg">#121212</color>
     <color name="ysync_launch_bg">#FFFFFF</color>
     <color name="ysync_lock_button_bg">#FFFFFF</color>

@@ -92,6 +92,7 @@ import org.schabi.newpipe.fragments.MainFragment;
 import org.schabi.newpipe.fragments.list.comments.CommentsFragment;
 import org.schabi.newpipe.fragments.list.videos.RelatedItemsFragment;
 import org.schabi.newpipe.ktx.AnimationType;
+import org.schabi.newpipe.livechat.LiveChatFragment;
 import org.schabi.newpipe.local.dialog.PlaylistDialog;
 import org.schabi.newpipe.local.history.HistoryRecordManager;
 import org.schabi.newpipe.local.playlist.LocalPlaylistFragment;
@@ -160,12 +161,15 @@ public final class VideoDetailFragment
     public static final String ACTION_VIDEO_FRAGMENT_STOPPED =
             App.PACKAGE_NAME + ".VideoDetailFragment.ACTION_VIDEO_FRAGMENT_STOPPED";
 
+    private static final String LIVE_CHAT_TAB_TAG = "LIVE CHAT";
     private static final String COMMENTS_TAB_TAG = "COMMENTS";
     private static final String RELATED_TAB_TAG = "NEXT VIDEO";
     private static final String DESCRIPTION_TAB_TAG = "DESCRIPTION TAB";
     private static final String EMPTY_TAB_TAG = "EMPTY TAB";
 
     // tabs
+    @Nullable
+    private String liveChatVideoId;
     private boolean showComments;
     private boolean showRelatedItems;
     private boolean showDescription;
@@ -844,6 +848,7 @@ public final class VideoDetailFragment
     public void startLoading(final boolean forceLoad) {
         super.startLoading(forceLoad);
 
+        liveChatVideoId = null;
         initTabs();
         currentInfo = null;
         if (currentWorker != null) {
@@ -856,6 +861,7 @@ public final class VideoDetailFragment
     private void startLoading(final boolean forceLoad, final boolean addToBackStack) {
         super.startLoading(forceLoad);
 
+        liveChatVideoId = null;
         initTabs();
         currentInfo = null;
         if (currentWorker != null) {
@@ -908,6 +914,16 @@ public final class VideoDetailFragment
         pageAdapter.clearAllItems();
         tabIcons.clear();
         tabContentDescriptions.clear();
+
+        if (liveChatVideoId != null) {
+            // live streams get the chat tab first; the fragment bootstraps
+            // lazily, so a stream without chat just shows an empty state
+            pageAdapter.addFragment(
+                    LiveChatFragment.getInstance(serviceId, url, liveChatVideoId),
+                    LIVE_CHAT_TAB_TAG);
+            tabIcons.add(R.drawable.ic_live_tv);
+            tabContentDescriptions.add(R.string.live_chat_tab_description);
+        }
 
         if (shouldShowComments()) {
             pageAdapter.addFragment(
@@ -963,6 +979,24 @@ public final class VideoDetailFragment
     }
 
     private void updateTabs(@NonNull final StreamInfo info) {
+        // Keep the live chat tab in sync with the loaded stream: insert it
+        // (as the first tab) for livestreams, drop it for everything else,
+        // and rebuild it when navigating from one livestream to another.
+        // initTabs() restores the previously selected tab by tag, and the
+        // updateItem calls below then fill the rebuilt related/description
+        // tabs with this info, exactly like after a regular initTabs().
+        final boolean chatTabPresent =
+                pageAdapter.getItemPositionByTitle(LIVE_CHAT_TAB_TAG) != -1;
+        if (StreamTypeUtil.isLiveStream(info.getStreamType())) {
+            if (!chatTabPresent || !info.getId().equals(liveChatVideoId)) {
+                liveChatVideoId = info.getId();
+                initTabs();
+            }
+        } else if (chatTabPresent) {
+            liveChatVideoId = null;
+            initTabs();
+        }
+
         if (showRelatedItems) {
             if (binding.relatedItemsLayout == null) { // phone
                 pageAdapter.updateItem(RELATED_TAB_TAG, RelatedItemsFragment.getInstance(info));

@@ -15,9 +15,10 @@ import org.schabi.newpipe.DownloaderImpl;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Random;
+import java.util.Map;
 import java.util.Set;
 
 import okhttp3.OkHttpClient;
@@ -31,40 +32,56 @@ import okhttp3.ResponseBody;
  *
  * <p>The extractor's kiosks no longer include a generic YouTube home page
  * (Trending was removed in July 2025, leaving the Live kiosk as the default),
- * so, like other open-source clients, the home feed is driven directly
- * through YouTube's web endpoints. The first page is bootstrapped the way
- * the proven logged-out scrapers do it: the homepage HTML is fetched like a
- * browser would (desktop user agent, a {@code CONSENT} cookie against the
- * consent interstitial) and its embedded {@code ytInitialData} is parsed —
- * a bare {@code browse} request for {@code FEwhat_to_watch} without any
- * session data comes back unusable on some networks. Only when the HTML
- * route fails or yields nothing does the client fall back to that bare
- * {@code browse} request. Every following page is a {@code browse} request
- * holding the continuation token of the previous one. The
- * {@code visitorData} of the first response is captured and sent along with
- * the continuations, so YouTube keeps the feed session consistent.</p>
+ * so the home feed is driven directly through YouTube's web endpoints. The
+ * home feed is a recommendations surface: unlike search or the Shorts
+ * sequence, it only comes back populated for a request that carries a real
+ * visitor identity, so this client first establishes an anonymous session
+ * the way YouTube.js does — one browser-like fetch of the homepage whose
+ * server-issued cookies are kept and replayed, and whose page config
+ * provides the session's client version and visitor data. The homepage's
+ * embedded {@code ytInitialData} doubles as a candidate first page; when it
+ * yields nothing, the first page is a {@code browse} request for
+ * {@code FEwhat_to_watch} inside that session, and every following page is
+ * a {@code browse} request holding only the continuation token of the
+ * previous one. Visitor data of later responses is captured and sent
+ * along, so YouTube keeps the feed session consistent.</p>
  *
- * <p>Only plain videos are collected: shelves that are not
- * {@code richItemRenderer}s wrapping a {@code videoRenderer} (Shorts/reel
- * shelves, ads, sections) are skipped. Results are deduplicated by video id.
- * </p>
+ * <p>Videos are collected by walking the whole response tree: the classic
+ * {@code videoRenderer} family (also {@code gridVideoRenderer} and
+ * {@code compactVideoRenderer}, bare or wrapped in a
+ * {@code richItemRenderer}) and the newer {@code lockupViewModel} items.
+ * Shelves of other kinds (Shorts/reel shelves, ads, sections) are skipped.
+ * Results are deduplicated by video id.</p>
  *
- * <p>All methods perform blocking network I/O and must be called off the main
- * thread. Instances are stateful (they hold the session's visitor data) and
- * are not thread-safe; use one instance per feed.</p>
+ * <p>All methods perform blocking network I/O and must be called off the
+ * main thread. Instances are stateful (they hold the session) and are not
+ * thread-safe; use one instance per feed.</p>
  */
 public final class HomeFeedClient {
     private static final String TAG = HomeFeedClient.class.getSimpleName();
 
     // Public API key of the YouTube web client, used by every InnerTube caller.
     private static final String API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-    private static final String CLIENT_VERSION = "2.20251001.01.00";
+    // Used only until the homepage bootstrap scrapes the live client version.
+    private static final String FALLBACK_CLIENT_VERSION = "2.20251001.01.00";
     private static final String INNERTUBE_BASE_URL = "https://www.youtube.com/youtubei/v1/";
     private static final String HOME_PAGE_URL = "https://www.youtube.com/";
     private static final String HOME_BROWSE_ID = "FEwhat_to_watch";
+    private static final String LOCKUP_VIDEO_CONTENT_TYPE = "LOCKUP_CONTENT_TYPE_VIDEO";
+
+    private final Map<String, String> sessionCookies = new LinkedHashMap<>();
+    private String clientVersion = FALLBACK_CLIENT_VERSION;
 
     @Nullable
     private String visitorData;
+    private boolean sessionStarted;
+    @Nullable
+    private FeedPage bootstrappedPage;
+    @Nullable
+    private String bootstrapDetail;
+    private int lastHttpCode = -1;
+    @Nullable
+    private String lastFailureDetail;
 
     /**
      * One page of the home feed: the videos it contained, in feed order, and
@@ -94,77 +111,157 @@ public final class HomeFeedClient {
     }
 
     /**
-     * Fetches the first page of a fresh home feed session, dropping any
-     * visitor data captured by earlier calls.
-     *
-     * <p>The primary route scrapes the homepage's {@code ytInitialData}
-     * (see {@link #fetchFirstPageFromHtml()}); the bare {@code browse}
-     * request is only the fallback for when that route throws or yields
-     * no videos. Visitor data captured by the HTML route is kept for the
-     * fallback, so the API request still runs inside the scraped session.
-     * </p>
+     * A short, human-readable account of the most recent first-page fetch
+     * (which routes ran, their HTTP codes and how many videos each yielded),
+     * for display on the feed's error screen; {@code null} before the first
+     * fetch.
+     */
+    @Nullable
+    public String getLastFailureDetail() {
+        return lastFailureDetail;
+    }
+
+    /**
+     * Fetches the first page of the feed. The anonymous session is
+     * bootstrapped first (once per instance); the homepage's own
+     * {@code ytInitialData} is used when it already carries videos,
+     * otherwise the page comes from a session-backed {@code browse}
+     * request.
      */
     @NonNull
     public FeedPage fetchFirstPage() throws IOException {
-        visitorData = null;
-        try {
-            final FeedPage page = fetchFirstPageFromHtml();
-            if (!page.getItems().isEmpty()) {
-                return page;
-            }
-        } catch (final IOException e) {
-            // Fall through to the bare API request below.
-            Log.w(TAG, "Homepage scrape failed, using the browse API instead", e);
+        ensureSession();
+        final FeedPage candidate = bootstrappedPage;
+        bootstrappedPage = null;
+        if (candidate != null && !candidate.getItems().isEmpty()) {
+            lastFailureDetail = bootstrapDetail;
+            return candidate;
         }
+        lastHttpCode = -1;
+        try {
+            final FeedPage page = parsePage(postJson("browse", firstPageBody()));
+            lastFailureDetail = bootstrapDetail + "; browse: HTTP " + lastHttpCode
+                    + ", items=" + page.getItems().size()
+                    + ", visitor=" + (visitorData != null ? "yes" : "no");
+            if (page.getItems().isEmpty()) {
+                Log.w(TAG, "Home feed first page is empty: " + lastFailureDetail);
+            }
+            return page;
+        } catch (final IOException e) {
+            lastFailureDetail = bootstrapDetail + "; browse: error"
+                    + ", visitor=" + (visitorData != null ? "yes" : "no");
+            Log.w(TAG, "Home feed browse failed: " + lastFailureDetail, e);
+            throw e;
+        }
+    }
+
+    /**
+     * Fetches the next page of the feed, using a continuation token from a
+     * previous page and the session established by the bootstrap.
+     */
+    @NonNull
+    public FeedPage fetchNextPage(@NonNull final String continuationToken) throws IOException {
+        ensureSession();
         final String body = "{" + contextJson()
-                + ",\"browseId\":\"" + HOME_BROWSE_ID + "\"}";
+                + ",\"continuation\":\"" + escapeJson(continuationToken) + "\"}";
         return parsePage(postJson("browse", body));
     }
 
-    /**
-     * Fetches the homepage HTML like a desktop browser and parses the
-     * {@code ytInitialData} embedded in it as the first feed page. The
-     * {@code CONSENT} cookie (in the format youtube-dl sets) keeps the
-     * request from being redirected to the consent interstitial, whose
-     * page carries no feed data.
-     */
     @NonNull
-    private FeedPage fetchFirstPageFromHtml() throws IOException {
-        final OkHttpClient client = DownloaderImpl.getInstance().getClient();
-        final Request request = new Request.Builder()
-                .url(HOME_PAGE_URL)
-                .get()
-                .addHeader("User-Agent", DownloaderImpl.USER_AGENT)
-                .addHeader("Accept-Language", "id")
-                .addHeader("Cookie", buildConsentCookie())
-                .build();
-        try (Response response = client.newCall(request).execute()) {
-            final ResponseBody responseBody = response.body();
-            if (!response.isSuccessful() || responseBody == null) {
-                throw new IOException("Homepage request failed with HTTP "
-                        + response.code());
+    private String firstPageBody() {
+        return "{" + contextJson()
+                + ",\"browseId\":\"" + HOME_BROWSE_ID + "\"}";
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
+    // Session bootstrap
+    //////////////////////////////////////////////////////////////////////////*/
+
+    /**
+     * Establishes the anonymous session, once per instance: fetches the
+     * homepage like a desktop browser, keeps every cookie YouTube sets,
+     * adopts the client version and visitor data of the page's config, and
+     * parses the embedded {@code ytInitialData} as a candidate first page.
+     * A failed bootstrap is not fatal — the browse request still runs,
+     * just without a session — but its outcome is remembered in
+     * {@link #bootstrapDetail} for the failure diagnostics.
+     */
+    private void ensureSession() {
+        if (sessionStarted) {
+            return;
+        }
+        sessionStarted = true;
+        try {
+            final OkHttpClient client = DownloaderImpl.getInstance().getClient();
+            final Request request = new Request.Builder()
+                    .url(HOME_PAGE_URL)
+                    .get()
+                    .addHeader("User-Agent", DownloaderImpl.USER_AGENT)
+                    .addHeader("Accept-Language", "id")
+                    .build();
+            try (Response response = client.newCall(request).execute()) {
+                absorbCookies(response);
+                final StringBuilder detail = new StringBuilder("html: HTTP ")
+                        .append(response.code());
+                final ResponseBody responseBody = response.body();
+                if (!response.isSuccessful() || responseBody == null) {
+                    bootstrapDetail = detail.append(", ytInitialData=no, items=0").toString();
+                    return;
+                }
+                final String html = responseBody.string();
+                final String scrapedVersion =
+                        extractConfigValue(html, "INNERTUBE_CLIENT_VERSION");
+                if (scrapedVersion != null) {
+                    clientVersion = scrapedVersion;
+                }
+                if (visitorData == null) {
+                    visitorData = extractConfigValue(html, "VISITOR_DATA");
+                }
+                try {
+                    bootstrappedPage = parsePage(extractInitialData(html));
+                    detail.append(", ytInitialData=yes, items=")
+                            .append(bootstrappedPage.getItems().size());
+                } catch (final IOException e) {
+                    detail.append(", ytInitialData=no, items=0");
+                }
+                bootstrapDetail = detail.toString();
             }
-            final String html = responseBody.string();
-            final FeedPage page = parsePage(extractInitialData(html));
-            if (visitorData == null) {
-                // ytInitialData normally carries the visitor data in its
-                // response context (parsePage captured it); the ytcfg blob
-                // of the page is the backup source.
-                visitorData = extractVisitorData(html);
-            }
-            return page;
+        } catch (final IOException e) {
+            bootstrapDetail = "html: error";
+            Log.w(TAG, "Home session bootstrap failed", e);
         }
     }
 
     /**
-     * Builds the {@code CONSENT} cookie that gets past YouTube's consent
-     * interstitial: the value youtube-dl sets, a "YES" callback stamp with
-     * a random consent id.
+     * Stores the cookies of a response in the session store, replacing
+     * same-named ones, so they can be replayed on later requests.
      */
-    @NonNull
-    private static String buildConsentCookie() {
-        final int consentId = 100 + new Random().nextInt(900);
-        return "CONSENT=YES+cb.20210328-17-p0.id+FX+" + consentId;
+    private void absorbCookies(@NonNull final Response response) {
+        for (final String header : response.headers("Set-Cookie")) {
+            final int semicolon = header.indexOf(';');
+            final String pair = (semicolon < 0 ? header : header.substring(0, semicolon))
+                    .trim();
+            final int equals = pair.indexOf('=');
+            if (equals > 0) {
+                sessionCookies.put(pair.substring(0, equals).trim(),
+                        pair.substring(equals + 1).trim());
+            }
+        }
+    }
+
+    @Nullable
+    private String cookieHeader() {
+        if (sessionCookies.isEmpty()) {
+            return null;
+        }
+        final StringBuilder builder = new StringBuilder();
+        for (final Map.Entry<String, String> entry : sessionCookies.entrySet()) {
+            if (builder.length() > 0) {
+                builder.append("; ");
+            }
+            builder.append(entry.getKey()).append('=').append(entry.getValue());
+        }
+        return builder.toString();
     }
 
     /**
@@ -224,13 +321,13 @@ public final class HomeFeedClient {
     }
 
     /**
-     * Reads the visitor data out of the page's ytcfg blob
-     * ({@code "VISITOR_DATA":"..."}), the backup for when
-     * {@code ytInitialData} itself carries none.
+     * Reads a string value out of the page's ytcfg blob
+     * ({@code "KEY":"..."}), or {@code null} when the key is absent.
      */
     @Nullable
-    private static String extractVisitorData(@NonNull final String html) {
-        final String marker = "\"VISITOR_DATA\":\"";
+    private static String extractConfigValue(@NonNull final String html,
+                                             @NonNull final String key) {
+        final String marker = "\"" + key + "\":\"";
         final int markerIndex = html.indexOf(marker);
         if (markerIndex < 0) {
             return null;
@@ -243,17 +340,9 @@ public final class HomeFeedClient {
         return html.substring(valueStart, valueEnd);
     }
 
-    /**
-     * Fetches the next page of the feed, using a continuation token from a
-     * previous page and the visitor data captured so far.
-     */
-    @NonNull
-    public FeedPage fetchNextPage(@NonNull final String continuationToken) throws IOException {
-        final String body = "{" + contextJson()
-                + ",\"browseId\":\"" + HOME_BROWSE_ID + "\""
-                + ",\"continuation\":\"" + escapeJson(continuationToken) + "\"}";
-        return parsePage(postJson("browse", body));
-    }
+    /*//////////////////////////////////////////////////////////////////////////
+    // Response parsing
+    //////////////////////////////////////////////////////////////////////////*/
 
     @NonNull
     private FeedPage parsePage(@NonNull final JsonObject root) {
@@ -264,119 +353,328 @@ public final class HomeFeedClient {
                 visitorData = newVisitorData;
             }
         }
-
         final List<HomeFeedItem> items = new ArrayList<>();
         final Set<String> seen = new LinkedHashSet<>();
         final String[] continuation = new String[1];
-
-        final JsonArray gridContents = findGridContents(root);
-        if (gridContents != null) {
-            collectItems(gridContents, items, seen, continuation);
-        }
-        final JsonArray continuationItems = findContinuationItems(root);
-        if (continuationItems != null) {
-            collectItems(continuationItems, items, seen, continuation);
-        }
-        if (continuation[0] == null) {
-            continuation[0] = findLastContinuationItemToken(root);
-        }
+        collectFromTree(root, items, seen, continuation);
         return new FeedPage(items, continuation[0]);
     }
 
     /**
-     * Collects the videos of one rich-grid contents (or continuation items)
-     * array and remembers the token of its continuation item, if any.
+     * Walks the whole response tree collecting video items and the feed's
+     * continuation token. Item order follows the arrays of the response
+     * (grids, shelves and continuation items all carry their entries in
+     * arrays); the token of the last continuation item found wins, as grid
+     * continuations are emitted after the items they continue.
      */
-    private static void collectItems(@NonNull final JsonArray contents,
-                                     @NonNull final List<HomeFeedItem> out,
-                                     @NonNull final Set<String> seen,
-                                     @NonNull final String[] continuation) {
-        for (int i = 0; i < contents.size(); i++) {
-            final Object entry = contents.get(i);
-            if (!(entry instanceof JsonObject)) {
-                continue;
+    private static void collectFromTree(@NonNull final Object node,
+                                        @NonNull final List<HomeFeedItem> out,
+                                        @NonNull final Set<String> seen,
+                                        @NonNull final String[] continuation) {
+        if (node instanceof JsonObject) {
+            final JsonObject object = (JsonObject) node;
+            JsonObject renderer = object.getObject("videoRenderer");
+            if (renderer == null) {
+                renderer = object.getObject("gridVideoRenderer");
             }
-            final JsonObject item = (JsonObject) entry;
-            final JsonObject richItem = item.getObject("richItemRenderer");
-            if (richItem != null) {
-                final JsonObject content = richItem.getObject("content");
-                final JsonObject videoRenderer = content == null
-                        ? null : content.getObject("videoRenderer");
-                if (videoRenderer != null) {
-                    addVideo(videoRenderer, out, seen);
-                }
-                continue;
+            if (renderer == null) {
+                renderer = object.getObject("compactVideoRenderer");
             }
-            final JsonObject continuationItem = item.getObject("continuationItemRenderer");
-            if (continuationItem != null) {
-                final JsonObject endpoint = continuationItem.getObject("continuationEndpoint");
-                final JsonObject command = endpoint == null
-                        ? null : endpoint.getObject("continuationCommand");
-                final String token = command == null ? null : command.getString("token");
-                if (token != null && !token.isEmpty()) {
-                    continuation[0] = token;
-                }
+            if (renderer != null) {
+                addVideo(renderer, out, seen);
+            }
+            final JsonObject lockup = object.getObject("lockupViewModel");
+            if (lockup != null) {
+                addLockup(lockup, out, seen);
+            }
+            final String token = continuationTokenOf(object);
+            if (token != null) {
+                continuation[0] = token;
+            }
+            for (final Object value : object.values()) {
+                collectFromTree(value, out, seen, continuation);
+            }
+        } else if (node instanceof JsonArray) {
+            final JsonArray array = (JsonArray) node;
+            for (int i = 0; i < array.size(); i++) {
+                collectFromTree(array.get(i), out, seen, continuation);
             }
         }
-    }
-
-    private static void addVideo(@NonNull final JsonObject videoRenderer,
-                                 @NonNull final List<HomeFeedItem> out,
-                                 @NonNull final Set<String> seen) {
-        final String videoId = videoRenderer.getString("videoId");
-        if (videoId == null || videoId.isEmpty() || !seen.add(videoId)) {
-            return;
-        }
-        final String durationText = extractText(videoRenderer.getObject("lengthText"));
-        out.add(new HomeFeedItem(
-                videoId,
-                extractText(videoRenderer.getObject("title")),
-                uploaderName(videoRenderer),
-                bestThumbnailUrl(videoRenderer.getObject("thumbnail")),
-                durationText,
-                extractText(videoRenderer.getObject("viewCountText")),
-                extractText(videoRenderer.getObject("publishedTimeText")),
-                isLive(videoRenderer, durationText)));
-    }
-
-    @Nullable
-    private static String uploaderName(@NonNull final JsonObject videoRenderer) {
-        final String fromByline = extractText(videoRenderer.getObject("longBylineText"));
-        return fromByline != null
-                ? fromByline : extractText(videoRenderer.getObject("ownerText"));
     }
 
     /**
-     * A video is live when one of its badges is the LIVE badge, or when it
-     * has no duration text at all (live and upcoming videos carry none).
+     * The continuation token carried directly by one object, if it is a
+     * continuation item (classic renderer or newer view model shape).
      */
-    private static boolean isLive(@NonNull final JsonObject videoRenderer,
-                                  @Nullable final String durationText) {
-        final JsonArray badges = videoRenderer.getArray("badges");
-        if (badges != null) {
-            for (int i = 0; i < badges.size(); i++) {
-                final Object entry = badges.get(i);
-                if (!(entry instanceof JsonObject)) {
-                    continue;
+    @Nullable
+    private static String continuationTokenOf(@NonNull final JsonObject object) {
+        final JsonObject continuationItem = object.getObject("continuationItemRenderer");
+        if (continuationItem != null) {
+            final JsonObject endpoint = continuationItem.getObject("continuationEndpoint");
+            final JsonObject command = endpoint == null
+                    ? null : endpoint.getObject("continuationCommand");
+            final String token = command == null ? null : command.getString("token");
+            if (token != null && !token.isEmpty()) {
+                return token;
+            }
+        }
+        final JsonObject viewModel = object.getObject("continuationItemViewModel");
+        if (viewModel != null) {
+            final JsonObject command = viewModel.getObject("continuationCommand");
+            String token = command == null ? null : command.getString("token");
+            if (token == null) {
+                token = viewModel.getString("token");
+            }
+            if (token != null && !token.isEmpty()) {
+                return token;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Adds one video of the classic renderer family ({@code videoRenderer}
+     * and its grid/compact siblings, whose fields differ slightly — every
+     * lookup falls back across the names the variants use).
+     */
+    private static void addVideo(@NonNull final JsonObject renderer,
+                                 @NonNull final List<HomeFeedItem> out,
+                                 @NonNull final Set<String> seen) {
+        final String videoId = renderer.getString("videoId");
+        if (videoId == null || videoId.isEmpty() || !seen.add(videoId)) {
+            return;
+        }
+        String durationText = extractText(renderer.getObject("lengthText"));
+        boolean live = hasLiveBadge(renderer);
+        if (durationText == null) {
+            // Grid renderers may carry the duration only in a thumbnail
+            // overlay; a LIVE overlay text marks a running stream instead.
+            final String overlayText = overlayDurationText(renderer);
+            if ("LIVE".equals(overlayText)) {
+                live = true;
+            } else if (overlayText != null) {
+                durationText = overlayText;
+            }
+        }
+        if (durationText == null) {
+            // No duration at all: a running or upcoming stream.
+            live = true;
+        }
+        String viewCountText = extractText(renderer.getObject("viewCountText"));
+        if (viewCountText == null) {
+            viewCountText = extractText(renderer.getObject("shortViewCountText"));
+        }
+        out.add(new HomeFeedItem(
+                videoId,
+                extractText(renderer.getObject("title")),
+                uploaderName(renderer),
+                bestThumbnailUrl(renderer.getObject("thumbnail")),
+                durationText,
+                viewCountText,
+                extractText(renderer.getObject("publishedTimeText")),
+                live));
+    }
+
+    /**
+     * Adds one video of the newer {@code lockupViewModel} family. Its
+     * fields live in dedicated view models instead of text objects, so
+     * every extraction is defensive: only the video id is mandatory, the
+     * rest degrades to {@code null}.
+     */
+    private static void addLockup(@NonNull final JsonObject lockup,
+                                  @NonNull final List<HomeFeedItem> out,
+                                  @NonNull final Set<String> seen) {
+        if (!LOCKUP_VIDEO_CONTENT_TYPE.equals(lockup.getString("contentType"))) {
+            return;
+        }
+        final String videoId = lockup.getString("contentId");
+        if (videoId == null || videoId.isEmpty() || !seen.add(videoId)) {
+            return;
+        }
+        final JsonObject metadata = lockup.getObject("metadata");
+        final JsonObject metadataViewModel = metadata == null
+                ? null : metadata.getObject("lockupMetadataViewModel");
+        String title = null;
+        String uploaderName = null;
+        String viewCountText = null;
+        String publishedTimeText = null;
+        if (metadataViewModel != null) {
+            final JsonObject titleObject = metadataViewModel.getObject("title");
+            if (titleObject != null) {
+                title = titleObject.getString("content");
+                if (title == null) {
+                    title = extractText(titleObject);
                 }
-                final JsonObject badge =
-                        ((JsonObject) entry).getObject("metadataBadgeRenderer");
-                if (badge == null) {
-                    continue;
-                }
-                if ("BADGE_STYLE_TYPE_LIVE_NOW".equals(badge.getString("style"))) {
-                    return true;
-                }
-                final JsonObject icon = badge.getObject("icon");
-                if (icon != null && "LIVE".equals(icon.getString("iconType"))) {
-                    return true;
-                }
-                if ("LIVE".equals(badge.getString("label"))) {
-                    return true;
+            }
+            // Metadata rows: the first row names the uploader, the second
+            // row's parts are the view count and the publish time.
+            final JsonObject innerMetadata = metadataViewModel.getObject("metadata");
+            final JsonObject contentMetadata = innerMetadata == null
+                    ? null : innerMetadata.getObject("contentMetadataViewModel");
+            final JsonArray rows = contentMetadata == null
+                    ? null : contentMetadata.getArray("metadataRows");
+            if (rows != null && !rows.isEmpty()) {
+                uploaderName = metadataRowText(rows.get(0));
+                if (rows.size() > 1 && rows.get(1) instanceof JsonObject) {
+                    final JsonArray parts = ((JsonObject) rows.get(1)).getArray("parts");
+                    if (parts != null && !parts.isEmpty()) {
+                        viewCountText = partText(parts.get(0));
+                        if (parts.size() > 1) {
+                            publishedTimeText = partText(parts.get(1));
+                        }
+                    }
                 }
             }
         }
-        return durationText == null;
+        final JsonObject contentImage = lockup.getObject("contentImage");
+        final JsonObject thumbnailViewModel = contentImage == null
+                ? null : contentImage.getObject("thumbnailViewModel");
+        String durationText = null;
+        boolean live = false;
+        if (thumbnailViewModel != null) {
+            final JsonArray overlays = thumbnailViewModel.getArray("overlays");
+            if (overlays != null) {
+                for (int i = 0; i < overlays.size(); i++) {
+                    final Object entry = overlays.get(i);
+                    if (!(entry instanceof JsonObject)) {
+                        continue;
+                    }
+                    final JsonObject bottomOverlay = ((JsonObject) entry)
+                            .getObject("thumbnailBottomOverlayViewModel");
+                    final JsonArray badges = bottomOverlay == null
+                            ? null : bottomOverlay.getArray("badges");
+                    if (badges == null || badges.isEmpty()
+                            || !(badges.get(0) instanceof JsonObject)) {
+                        continue;
+                    }
+                    final JsonObject badge = ((JsonObject) badges.get(0))
+                            .getObject("thumbnailBadgeViewModel");
+                    final String badgeText = badge == null ? null : badge.getString("text");
+                    if ("LIVE".equals(badgeText)) {
+                        live = true;
+                    } else if (badgeText != null) {
+                        durationText = badgeText;
+                    }
+                }
+            }
+        }
+        out.add(new HomeFeedItem(
+                videoId,
+                title,
+                uploaderName,
+                lockupThumbnailUrl(thumbnailViewModel),
+                durationText,
+                viewCountText,
+                publishedTimeText,
+                live));
+    }
+
+    @Nullable
+    private static String metadataRowText(@Nullable final Object row) {
+        if (!(row instanceof JsonObject)) {
+            return null;
+        }
+        final JsonArray parts = ((JsonObject) row).getArray("parts");
+        if (parts == null) {
+            return null;
+        }
+        final StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < parts.size(); i++) {
+            final String text = partText(parts.get(i));
+            if (text != null) {
+                builder.append(text);
+            }
+        }
+        return builder.length() == 0 ? null : builder.toString();
+    }
+
+    @Nullable
+    private static String partText(@Nullable final Object part) {
+        if (!(part instanceof JsonObject)) {
+            return null;
+        }
+        final JsonObject text = ((JsonObject) part).getObject("text");
+        if (text == null) {
+            return null;
+        }
+        final String content = text.getString("content");
+        return content != null ? content : extractText(text);
+    }
+
+    @Nullable
+    private static String lockupThumbnailUrl(
+            @Nullable final JsonObject thumbnailViewModel) {
+        if (thumbnailViewModel == null) {
+            return null;
+        }
+        final JsonObject image = thumbnailViewModel.getObject("image");
+        final JsonArray sources = image == null ? null : image.getArray("sources");
+        if (sources == null || sources.isEmpty()) {
+            return null;
+        }
+        // Sources are sorted by size ascending; the last one is the best.
+        final Object last = sources.get(sources.size() - 1);
+        return last instanceof JsonObject ? ((JsonObject) last).getString("url") : null;
+    }
+
+    @Nullable
+    private static String uploaderName(@NonNull final JsonObject renderer) {
+        String name = extractText(renderer.getObject("longBylineText"));
+        if (name == null) {
+            name = extractText(renderer.getObject("ownerText"));
+        }
+        if (name == null) {
+            name = extractText(renderer.getObject("shortBylineText"));
+        }
+        return name;
+    }
+
+    private static boolean hasLiveBadge(@NonNull final JsonObject renderer) {
+        final JsonArray badges = renderer.getArray("badges");
+        if (badges == null) {
+            return false;
+        }
+        for (int i = 0; i < badges.size(); i++) {
+            final Object entry = badges.get(i);
+            if (!(entry instanceof JsonObject)) {
+                continue;
+            }
+            final JsonObject badge =
+                    ((JsonObject) entry).getObject("metadataBadgeRenderer");
+            if (badge == null) {
+                continue;
+            }
+            if ("BADGE_STYLE_TYPE_LIVE_NOW".equals(badge.getString("style"))) {
+                return true;
+            }
+            final JsonObject icon = badge.getObject("icon");
+            if (icon != null && "LIVE".equals(icon.getString("iconType"))) {
+                return true;
+            }
+            if ("LIVE".equals(badge.getString("label"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Nullable
+    private static String overlayDurationText(@NonNull final JsonObject renderer) {
+        final JsonArray overlays = renderer.getArray("thumbnailOverlays");
+        if (overlays == null) {
+            return null;
+        }
+        for (int i = 0; i < overlays.size(); i++) {
+            final Object entry = overlays.get(i);
+            if (entry instanceof JsonObject) {
+                final JsonObject status = ((JsonObject) entry)
+                        .getObject("thumbnailOverlayTimeStatusRenderer");
+                if (status != null) {
+                    return extractText(status.getObject("text"));
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -423,96 +721,15 @@ public final class HomeFeedClient {
         return last instanceof JsonObject ? ((JsonObject) last).getString("url") : null;
     }
 
-    /**
-     * Finds the contents array of the first rich grid in the response (the
-     * first page wraps it in the browse results; some responses repeat the
-     * whole contents tree for continuation requests).
-     */
-    @Nullable
-    private static JsonArray findGridContents(@NonNull final JsonObject root) {
-        final JsonObject richGrid = findObject(root, "richGridRenderer");
-        return richGrid == null ? null : richGrid.getArray("contents");
-    }
-
-    /**
-     * Finds the items array appended by a continuation response
-     * ({@code appendContinuationItemsAction}).
-     */
-    @Nullable
-    private static JsonArray findContinuationItems(@NonNull final JsonObject root) {
-        final JsonObject action = findObject(root, "appendContinuationItemsAction");
-        return action == null ? null : action.getArray("continuationItems");
-    }
-
-    /**
-     * Fallback continuation search: the token of the last
-     * {@code continuationItemRenderer} anywhere in the tree (grid
-     * continuations are emitted after the items they continue).
-     */
-    @Nullable
-    private static String findLastContinuationItemToken(@NonNull final JsonObject root) {
-        final String[] result = new String[1];
-        findLastContinuationItemToken(root, result);
-        return result[0];
-    }
-
-    private static void findLastContinuationItemToken(@NonNull final Object node,
-                                                      @NonNull final String[] result) {
-        if (node instanceof JsonObject) {
-            final JsonObject object = (JsonObject) node;
-            final JsonObject continuationItem = object.getObject("continuationItemRenderer");
-            if (continuationItem != null) {
-                final JsonObject endpoint = continuationItem.getObject("continuationEndpoint");
-                final JsonObject command = endpoint == null
-                        ? null : endpoint.getObject("continuationCommand");
-                final String token = command == null ? null : command.getString("token");
-                if (token != null && !token.isEmpty()) {
-                    result[0] = token;
-                }
-            }
-            for (final Object value : object.values()) {
-                findLastContinuationItemToken(value, result);
-            }
-        } else if (node instanceof JsonArray) {
-            final JsonArray array = (JsonArray) node;
-            for (int i = 0; i < array.size(); i++) {
-                findLastContinuationItemToken(array.get(i), result);
-            }
-        }
-    }
-
-    @Nullable
-    private static JsonObject findObject(@NonNull final Object node,
-                                         @NonNull final String key) {
-        if (node instanceof JsonObject) {
-            final JsonObject object = (JsonObject) node;
-            final JsonObject direct = object.getObject(key);
-            if (direct != null) {
-                return direct;
-            }
-            for (final Object value : object.values()) {
-                final JsonObject found = findObject(value, key);
-                if (found != null) {
-                    return found;
-                }
-            }
-        } else if (node instanceof JsonArray) {
-            final JsonArray array = (JsonArray) node;
-            for (int i = 0; i < array.size(); i++) {
-                final JsonObject found = findObject(array.get(i), key);
-                if (found != null) {
-                    return found;
-                }
-            }
-        }
-        return null;
-    }
+    /*//////////////////////////////////////////////////////////////////////////
+    // Requests
+    //////////////////////////////////////////////////////////////////////////*/
 
     @NonNull
     private String contextJson() {
         final StringBuilder builder = new StringBuilder();
         builder.append("\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"")
-                .append(CLIENT_VERSION)
+                .append(clientVersion)
                 .append("\",\"hl\":\"id\",\"gl\":\"ID\"");
         if (visitorData != null) {
             builder.append(",\"visitorData\":\"")
@@ -532,16 +749,24 @@ public final class HomeFeedClient {
     private JsonObject postJson(@NonNull final String path, @NonNull final String body)
             throws IOException {
         final OkHttpClient client = DownloaderImpl.getInstance().getClient();
-        final Request request = new Request.Builder()
+        final Request.Builder builder = new Request.Builder()
                 .url(INNERTUBE_BASE_URL + path + "?key=" + API_KEY)
                 .post(RequestBody.create(body.getBytes(StandardCharsets.UTF_8)))
                 .addHeader("Content-Type", "application/json")
                 .addHeader("X-YouTube-Client-Name", "1")
-                .addHeader("X-YouTube-Client-Version", CLIENT_VERSION)
+                .addHeader("X-YouTube-Client-Version", clientVersion)
                 .addHeader("Origin", "https://www.youtube.com")
-                .addHeader("Referer", "https://www.youtube.com/")
-                .build();
-        try (Response response = client.newCall(request).execute()) {
+                .addHeader("Referer", "https://www.youtube.com/");
+        if (visitorData != null) {
+            builder.addHeader("X-Goog-Visitor-Id", visitorData);
+        }
+        final String cookies = cookieHeader();
+        if (cookies != null) {
+            builder.addHeader("Cookie", cookies);
+        }
+        try (Response response = client.newCall(builder.build()).execute()) {
+            lastHttpCode = response.code();
+            absorbCookies(response);
             final ResponseBody responseBody = response.body();
             if (!response.isSuccessful() || responseBody == null) {
                 throw new IOException("InnerTube request to " + path

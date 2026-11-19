@@ -35,6 +35,14 @@
             android:text="@string/home_feed_error_loading_feed"
             android:textSize="16sp" />
 
+        <TextView
+            android:id="@+id/home_feed_error_detail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:textSize="12sp" />
+
         <Button
             android:id="@+id/home_feed_retry"
             android:layout_width="wrap_content"

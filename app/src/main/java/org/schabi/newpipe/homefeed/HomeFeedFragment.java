@@ -164,6 +164,8 @@ public final class HomeFeedFragment extends BaseFragment {
                     appendItems(page.getItems());
                     adapter.notifyDataSetChanged();
                     binding.homeFeedList.scrollToPosition(0);
+                    binding.homeFeedErrorDetail.setText(
+                            feedClient.getLastFailureDetail());
                     binding.homeFeedError.setVisibility(
                             items.isEmpty() ? View.VISIBLE : View.GONE);
                 }, throwable -> {
@@ -175,6 +177,8 @@ public final class HomeFeedFragment extends BaseFragment {
                     binding.homeFeedLoading.setVisibility(View.GONE);
                     binding.homeFeedRefresh.setRefreshing(false);
                     if (items.isEmpty()) {
+                        binding.homeFeedErrorDetail.setText(
+                                feedClient.getLastFailureDetail());
                         binding.homeFeedError.setVisibility(View.VISIBLE);
                     }
                 }));
