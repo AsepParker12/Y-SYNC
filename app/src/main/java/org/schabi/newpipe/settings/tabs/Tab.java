@@ -23,6 +23,7 @@ import org.schabi.newpipe.fragments.list.channel.ChannelFragment;
 import org.schabi.newpipe.fragments.list.kiosk.DefaultKioskFragment;
 import org.schabi.newpipe.fragments.list.kiosk.KioskFragment;
 import org.schabi.newpipe.fragments.list.playlist.PlaylistFragment;
+import org.schabi.newpipe.homefeed.HomeFeedFragment;
 import org.schabi.newpipe.local.bookmark.BookmarkFragment;
 import org.schabi.newpipe.local.feed.FeedFragment;
 import org.schabi.newpipe.local.history.StatisticsPlaylistFragment;
@@ -337,6 +338,11 @@ public abstract class Tab {
 
         @Override
         public String getTabName(final Context context) {
+            // Y-SYNC: the YouTube "live" kiosk tab is the home tab and shows
+            // the generic home feed, so it carries the home name, not "Live".
+            if (isYoutubeLiveKiosk()) {
+                return context.getString(R.string.bottom_nav_home);
+            }
             return KioskTranslator.getTranslatedKioskName(kioskId, context);
         }
 
@@ -353,8 +359,19 @@ public abstract class Tab {
         }
 
         @Override
-        public KioskFragment getFragment(final Context context) throws ExtractionException {
+        public Fragment getFragment(final Context context) throws ExtractionException {
+            // Y-SYNC: the home tab shows YouTube's generic home feed instead
+            // of only livestreams. The Live kiosk page itself is unchanged
+            // and stays reachable from the drawer's kiosk section, which
+            // opens KioskFragment directly.
+            if (isYoutubeLiveKiosk()) {
+                return HomeFeedFragment.newInstance();
+            }
             return KioskFragment.getInstance(kioskServiceId, kioskId);
+        }
+
+        private boolean isYoutubeLiveKiosk() {
+            return kioskServiceId == 0 && "live".equals(kioskId);
         }
 
         @Override

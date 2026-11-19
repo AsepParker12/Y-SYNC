@@ -915,4 +915,5 @@
     <string name="shorts_title">Shorts</string>
     <string name="shorts_open_in_player">Open in player</string>
     <string name="shorts_error_loading_feed">Could not load Shorts</string>
+    <string name="home_feed_error_loading_feed">Could not load the home feed</string>
 </resources>
