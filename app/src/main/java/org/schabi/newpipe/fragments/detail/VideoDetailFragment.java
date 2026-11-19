@@ -35,7 +35,9 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
+import android.graphics.Outline;
 import android.view.View;
+import android.view.ViewOutlineProvider;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
@@ -677,6 +679,7 @@ public final class VideoDetailFragment
         });
 
         setupBottomPlayer();
+        setupMiniPlayerCard();
         if (!playerHolder.isBound()) {
             setHeightThumbnail();
         } else {
@@ -2048,7 +2051,7 @@ public final class VideoDetailFragment
         }
     }
 
-    private boolean isFullscreen() {
+    public boolean isFullscreen() {
         return isPlayerAvailable() && player.UIs().get(VideoPlayerUi.class)
                 .map(VideoPlayerUi::isFullscreen).orElse(false);
     }
@@ -2341,6 +2344,27 @@ public final class VideoDetailFragment
                 newBottomPadding);
     }
 
+    // Y-SYNC: corner radius of the floating mini player card, in pixels;
+    // interpolated in setOverlayLook while the sheet slides.
+    private float miniCardRadiusPx;
+
+    /**
+     * Y-SYNC: the collapsed mini player becomes a floating card — rounded
+     * corners clipped via an outline provider; margins, radius and shadow
+     * are interpolated in setOverlayLook (full float when collapsed, flush
+     * full-width when expanded).
+     */
+    private void setupMiniPlayerCard() {
+        binding.overlayLayout.setClipToOutline(true);
+        binding.overlayLayout.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(final View view, final Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
+                        miniCardRadiusPx);
+            }
+        });
+    }
+
     private void setupBottomPlayer() {
         final CoordinatorLayout.LayoutParams params =
                 (CoordinatorLayout.LayoutParams) binding.appBarLayout.getLayoutParams();
@@ -2481,6 +2505,22 @@ public final class VideoDetailFragment
             return;
         }
         binding.overlayLayout.setAlpha(Math.min(MAX_OVERLAY_ALPHA, 1 - slideOffset));
+        // Y-SYNC: float the mini player card — full float when collapsed,
+        // flush full-width while expanding.
+        final float floatT = Math.max(0f, Math.min(1f, 1 - slideOffset));
+        final float density = getResources().getDisplayMetrics().density;
+        miniCardRadiusPx = 24 * density * floatT;
+        binding.overlayLayout.invalidateOutline();
+        binding.overlayLayout.setElevation(8 * density * floatT);
+        final ViewGroup.MarginLayoutParams overlayParams =
+                (ViewGroup.MarginLayoutParams) binding.overlayLayout.getLayoutParams();
+        final int sideMargin = (int) (16 * density * floatT);
+        if (overlayParams.leftMargin != sideMargin
+                || overlayParams.rightMargin != sideMargin) {
+            overlayParams.leftMargin = sideMargin;
+            overlayParams.rightMargin = sideMargin;
+            binding.overlayLayout.setLayoutParams(overlayParams);
+        }
         // These numbers are not special. They just do a cool transition
         behavior.setTopAndBottomOffset(
                 (int) (-binding.detailThumbnailImageView.getHeight() * 2 * (1 - slideOffset) / 3));

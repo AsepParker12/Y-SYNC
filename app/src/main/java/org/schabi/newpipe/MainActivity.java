@@ -504,7 +504,13 @@ public class MainActivity extends AppCompatActivity {
                         || behavior.getPeekHeight() > 0);
         final boolean playerExpanded = playerPresent && playerSlideOffset > 0f;
         final boolean miniPlayer = playerPresent && !playerExpanded;
-        final boolean show = topLevel && !playerExpanded;
+        // Fullscreen playback never shows the bar — checked explicitly,
+        // because after a rotation the slide offset can read stale a while.
+        final Fragment playerFragment = getSupportFragmentManager()
+                .findFragmentById(R.id.fragment_player_holder);
+        final boolean fullscreen = playerFragment instanceof VideoDetailFragment
+                && ((VideoDetailFragment) playerFragment).isFullscreen();
+        final boolean show = topLevel && !playerExpanded && !fullscreen;
         mainBinding.bottomBlur.setVisibility(show ? View.VISIBLE : View.GONE);
         // Y-SYNC: stack the mini player directly above the floating bar instead
         // of letting it cover the bar — lift the sheet by the bar's footprint,
@@ -828,6 +834,9 @@ public class MainActivity extends AppCompatActivity {
         Localization.initPrettyTime(Localization.resolvePrettyTime());
         super.onResume();
         updateBottomNavVisibility();
+        // Rotation recreates the activity and the sheet state can settle
+        // after onResume; re-check once everything has landed.
+        mainBinding.bottomNav.postDelayed(this::updateBottomNavVisibility, 400);
 
         // Close drawer on return, and don't show animation,
         // so it looks like the drawer isn't open when the user returns to MainActivity
