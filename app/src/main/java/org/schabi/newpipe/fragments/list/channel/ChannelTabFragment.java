@@ -20,6 +20,7 @@ import org.schabi.newpipe.extractor.NewPipe;
 import org.schabi.newpipe.extractor.Page;
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo;
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs;
+import org.schabi.newpipe.extractor.exceptions.ExtractionException;
 import org.schabi.newpipe.extractor.exceptions.ParsingException;
 import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler;
 import org.schabi.newpipe.extractor.linkhandler.ListLinkHandlerFactory;
@@ -322,7 +323,7 @@ public class ChannelTabFragment extends BaseListInfoFragment<InfoItem, ChannelTa
             shortsItem.setTitle(item.getName());
             shortsItem.setUploaderName(item.getUploaderName());
             return shortsItem;
-        } catch (final ParsingException e) {
+        } catch (final ExtractionException e) {
             return null;
         }
     }
