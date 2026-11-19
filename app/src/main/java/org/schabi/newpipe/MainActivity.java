@@ -312,6 +312,17 @@ public class MainActivity extends AppCompatActivity {
 
     private final WeakHashMap<View, Boolean> topGlassPaddedViews = new WeakHashMap<>();
 
+    private void setupTopBlur() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return;
+        }
+        ((BlurView) toolbarLayoutBinding.getRoot())
+                .setupWith(mainBinding.getRoot(), new RenderEffectBlur())
+                .setFrameClearDrawable(ContextCompat.getDrawable(this,
+                        R.drawable.glass_nav_tint))
+                .setBlurRadius(18f);
+    }
+
     private void setupTopGlass() {
         // Y-SYNC: the top bar floats like the bottom bar — pill outline.
         final BlurView topBlur = (BlurView) toolbarLayoutBinding.getRoot();
@@ -323,12 +334,8 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         topBlur.setClipToOutline(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            topBlur.setupWith(mainBinding.getRoot(), new RenderEffectBlur())
-                    .setFrameClearDrawable(ContextCompat.getDrawable(this,
-                            R.drawable.glass_nav_tint))
-                    .setBlurRadius(18f);
-        }
+        setupTopBlur();
+        topBlur.post(this::setupTopBlur);
         getSupportFragmentManager().registerFragmentLifecycleCallbacks(
                 new FragmentManager.FragmentLifecycleCallbacks() {
                     @Override
@@ -395,6 +402,14 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         mainBinding.bottomBlur.setClipToOutline(true);
+        setupBottomBlurEffect();
+        mainBinding.bottomBlur.post(this::setupBottomBlurEffect);
+    }
+
+    private void setupBottomBlurEffect() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return;
+        }
         mainBinding.bottomBlur.setupWith(mainBinding.getRoot(), new RenderEffectBlur())
                 .setFrameClearDrawable(ContextCompat.getDrawable(this,
                         R.drawable.glass_nav_tint))
@@ -469,7 +484,9 @@ public class MainActivity extends AppCompatActivity {
         }
         final Fragment current = getSupportFragmentManager()
                 .findFragmentById(R.id.fragment_holder);
-        final boolean topLevel = current instanceof MainFragment
+        // No fragment yet = the home screen is still loading: count it as
+        // top-level so the bar is correct from the very first frame.
+        final boolean topLevel = current == null || current instanceof MainFragment
                 || current instanceof FeedFragment
                 || current instanceof SubscriptionFragment
                 || current instanceof BookmarkFragment;
@@ -810,6 +827,7 @@ public class MainActivity extends AppCompatActivity {
         // Change the date format to match the selected language on resume
         Localization.initPrettyTime(Localization.resolvePrettyTime());
         super.onResume();
+        updateBottomNavVisibility();
 
         // Close drawer on return, and don't show animation,
         // so it looks like the drawer isn't open when the user returns to MainActivity
