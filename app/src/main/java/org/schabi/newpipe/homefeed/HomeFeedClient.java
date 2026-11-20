@@ -16,10 +16,12 @@ import org.schabi.newpipe.DownloaderImpl;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 
 import okhttp3.OkHttpClient;
@@ -119,8 +121,16 @@ public final class HomeFeedClient {
     // a time so the feed keeps mixing subjects as it pages.
     private static final String[] DISCOVERY_QUERIES = {
         "musik", "game", "berita", "sepak bola", "komedi", "film",
-        "teknologi", "kuliner"
+        "teknologi", "kuliner", "olahraga", "otomotif", "vlog", "anime",
+        "lagu", "edukasi", "hiburan", "tutorial", "gadget", "wisata",
+        "motivasi", "podcast"
     };
+    // Random suffixes so the same topic does not return the very same
+    // top results on every refresh.
+    private static final String[] DISCOVERY_MODIFIERS = {
+        "", " terbaru", " viral", " populer", " hari ini"
+    };
+    private final Random discoveryRandom = new Random();
     private static final int DISCOVERY_TOPICS_PER_PAGE = 3;
     private static final int DISCOVERY_MAX_FIRST_PAGE_ROUNDS = 3;
     private static final String DISCOVERY_TOKEN = "ysync-discovery-feed";
@@ -343,9 +353,15 @@ public final class HomeFeedClient {
     @Nullable
     private FeedPage fetchDiscoveryPage() {
         if (discoveryTopics.isEmpty()) {
+            // Every fresh discovery feed gets a new random topic order and
+            // random query variants: the searches are deterministic, so a
+            // fixed order made pull-to-refresh show the exact same feed.
             for (final String query : DISCOVERY_QUERIES) {
-                discoveryTopics.add(new DiscoveryTopic(query));
+                final String modifier = DISCOVERY_MODIFIERS[
+                        discoveryRandom.nextInt(DISCOVERY_MODIFIERS.length)];
+                discoveryTopics.add(new DiscoveryTopic(query + modifier));
             }
+            Collections.shuffle(discoveryTopics, discoveryRandom);
             discoveryCursor = 0;
         }
         final List<List<HomeFeedItem>> perTopicItems = new ArrayList<>();

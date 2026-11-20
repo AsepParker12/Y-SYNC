@@ -1,6 +1,7 @@
 package org.schabi.newpipe.player;
 
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW;
+import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_DECODING_FAILED;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS;
 import static com.google.android.exoplayer2.PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED;
@@ -315,10 +316,11 @@ public final class Player implements PlaybackListener, Listener {
                         R.string.always_use_exoplayer_set_output_surface_workaround_key), false)
                 ? new CustomRenderersFactory(context) : new DefaultRenderersFactory(context);
 
-        renderFactory.setEnableDecoderFallback(
-                prefs.getBoolean(
-                        context.getString(
-                                R.string.use_exoplayer_decoder_fallback_key), false));
+        // Y-SYNC: always allow ExoPlayer to fall back to the next decoder
+        // when the preferred one cannot be configured (MediaCodec
+        // CodecException in native_configure). Without it a single bad
+        // hardware decoder ended playback with "unrecoverable player error".
+        renderFactory.setEnableDecoderFallback(true);
 
         videoResolver = new VideoPlaybackResolver(context, dataSource, getQualityResolver());
         audioResolver = new AudioPlaybackResolver(context, dataSource);
@@ -1600,6 +1602,7 @@ public final class Player implements PlaybackListener, Listener {
                 setRecovery();
                 reloadPlayQueueManager();
                 break;
+            case ERROR_CODE_DECODER_INIT_FAILED:
             case ERROR_CODE_DECODING_FAILED:
                 // Decoder errors are often transient — e.g. every hardware
                 // codec was held by another player — so reload the stream
