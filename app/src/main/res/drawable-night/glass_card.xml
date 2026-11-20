@@ -1,6 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <corners android:radius="20dp" />
-    <gradient android:angle="270" android:startColor="#30FFFFFF" android:endColor="#17FFFFFF" />
-    <stroke android:width="1dp" android:color="#2BFFFFFF" />
-</shape>
+<!-- Liquid glass card (dark): translucent body, light edge, specular
+     highlight fading down from the top edge. Keep the 20dp radius in sync
+     with glass_card_ripple's mask. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="20dp" />
+            <gradient
+                android:angle="270"
+                android:endColor="#17FFFFFF"
+                android:startColor="#38FFFFFF" />
+            <stroke
+                android:width="1dp"
+                android:color="#38FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:left="1dp"
+        android:top="1dp"
+        android:right="1dp"
+        android:height="44dp"
+        android:gravity="top">
+        <shape android:shape="rectangle">
+            <corners
+                android:topLeftRadius="19dp"
+                android:topRightRadius="19dp" />
+            <gradient
+                android:angle="270"
+                android:endColor="#00FFFFFF"
+                android:startColor="#29FFFFFF" />
+        </shape>
+    </item>
+</layer-list>

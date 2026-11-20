@@ -1,7 +1,9 @@
 package org.schabi.newpipe.homefeed;
 
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -17,12 +19,14 @@ import org.schabi.newpipe.R;
 import org.schabi.newpipe.databinding.FragmentHomeFeedBinding;
 import org.schabi.newpipe.databinding.ListStreamCardItemBinding;
 import org.schabi.newpipe.util.NavigationHelper;
+import org.schabi.newpipe.util.ThemeHelper;
 import org.schabi.newpipe.util.image.CoilHelper;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
 import io.reactivex.rxjava3.core.Single;
@@ -46,6 +50,7 @@ public final class HomeFeedFragment extends BaseFragment {
     private static final int TRIM_SAFE_FIRST_VISIBLE = 100;
     private static final int YOUTUBE_SERVICE_ID = 0;
     private static final long STALE_AFTER_MS = 15 * 60 * 1000L;
+    private static final long LOAD_TIMEOUT_SECONDS = 30;
 
     private final List<HomeFeedItem> items = new ArrayList<>();
     private final Set<String> seenVideoIds = new HashSet<>();
@@ -88,6 +93,8 @@ public final class HomeFeedFragment extends BaseFragment {
         layoutManager = new LinearLayoutManager(requireContext());
         binding.homeFeedList.setLayoutManager(layoutManager);
         binding.homeFeedList.setAdapter(adapter);
+        setupCardSpacing();
+        setupRefreshLayout();
         binding.homeFeedList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull final RecyclerView recyclerView,
@@ -133,7 +140,61 @@ public final class HomeFeedFragment extends BaseFragment {
     //////////////////////////////////////////////////////////////////////////*/
 
     private void refreshFeed() {
+        // A refresh always wins over whatever was in flight: without this a
+        // stalled request kept loadingFeed true forever and every later
+        // pull-to-refresh was silently ignored.
+        disposables.clear();
+        loadingFeed = false;
         loadFirstPage(true);
+    }
+
+    /*//////////////////////////////////////////////////////////////////////////
+    // Look & feel (liquid glass)
+    //////////////////////////////////////////////////////////////////////////*/
+
+    /**
+     * Floating glass cards: a little air at the sides and between cards.
+     */
+    private void setupCardSpacing() {
+        final float density = getResources().getDisplayMetrics().density;
+        final int side = Math.round(12 * density);
+        final int gap = Math.round(8 * density);
+        binding.homeFeedList.addItemDecoration(new RecyclerView.ItemDecoration() {
+            @Override
+            public void getItemOffsets(@NonNull final Rect outRect, @NonNull final View view,
+                                       @NonNull final RecyclerView parent,
+                                       @NonNull final RecyclerView.State state) {
+                outRect.left = side;
+                outRect.right = side;
+                outRect.bottom = gap;
+            }
+        });
+    }
+
+    /**
+     * The floating glass top bar covers the first
+     * {@code actionBarSize + 18dp} of the screen (MainActivity pads the list
+     * by exactly that much). The pull-to-refresh spinner used to start at the
+     * very top of the layout, i.e. hidden behind the bar, so a pull looked
+     * like it did nothing. Start and rest it below the bar instead.
+     */
+    private void setupRefreshLayout() {
+        final float density = getResources().getDisplayMetrics().density;
+        final TypedValue actionBar = new TypedValue();
+        requireContext().getTheme().resolveAttribute(
+                android.R.attr.actionBarSize, actionBar, true);
+        final int barInset = TypedValue.complexToDimensionPixelSize(actionBar.data,
+                getResources().getDisplayMetrics()) + Math.round(18 * density);
+
+        binding.homeFeedRefresh.setProgressViewOffset(true,
+                barInset - Math.round(8 * density), barInset + Math.round(16 * density));
+        binding.homeFeedRefresh.setDistanceToTriggerSync(Math.round(96 * density));
+        binding.homeFeedRefresh.setProgressBackgroundColorSchemeColor(
+                ThemeHelper.resolveColorFromAttr(requireContext(),
+                        R.attr.card_item_background_color));
+        binding.homeFeedRefresh.setColorSchemeColors(
+                ThemeHelper.resolveColorFromAttr(requireContext(),
+                        android.R.attr.colorAccent));
     }
 
     private void loadFirstPage(final boolean isRefresh) {
@@ -152,6 +213,7 @@ public final class HomeFeedFragment extends BaseFragment {
         }
         disposables.add(Single.fromCallable(() -> feedClient.fetchFirstPage())
                 .subscribeOn(Schedulers.io())
+                .timeout(LOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(page -> {
                     loadingFeed = false;
