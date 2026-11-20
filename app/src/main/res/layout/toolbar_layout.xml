@@ -12,7 +12,7 @@
     android:layout_marginStart="16dp"
     android:layout_marginEnd="16dp"
     android:layout_marginTop="10dp"
-    android:background="?attr/card_item_background_color">
+    android:background="@drawable/glass_bar_bg">
 
     <eightbitlab.com.blurview.BlurView
         android:id="@+id/top_blur"
