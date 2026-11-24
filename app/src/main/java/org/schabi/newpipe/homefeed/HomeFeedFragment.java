@@ -1,5 +1,6 @@
 package org.schabi.newpipe.homefeed;
 
+import android.content.Context;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.util.Log;
@@ -15,16 +16,23 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.schabi.newpipe.BaseFragment;
+import org.schabi.newpipe.NewPipeDatabase;
 import org.schabi.newpipe.R;
+import org.schabi.newpipe.database.AppDatabase;
+import org.schabi.newpipe.database.stream.model.StreamEntity;
+import org.schabi.newpipe.database.stream.model.StreamStateEntity;
 import org.schabi.newpipe.databinding.FragmentHomeFeedBinding;
 import org.schabi.newpipe.databinding.ListStreamCardItemBinding;
+import org.schabi.newpipe.util.DependentPreferenceHelper;
 import org.schabi.newpipe.util.NavigationHelper;
 import org.schabi.newpipe.util.ThemeHelper;
 import org.schabi.newpipe.util.image.CoilHelper;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -54,6 +62,9 @@ public final class HomeFeedFragment extends BaseFragment {
 
     private final List<HomeFeedItem> items = new ArrayList<>();
     private final Set<String> seenVideoIds = new HashSet<>();
+    // Watched positions by videoId: {progressSeconds, durationSeconds}.
+    // Filled from the local playback-state database, like the other lists.
+    private final Map<String, long[]> watchedStates = new HashMap<>();
     private final CompositeDisposable disposables = new CompositeDisposable();
 
     private FragmentHomeFeedBinding binding;
@@ -118,12 +129,70 @@ public final class HomeFeedFragment extends BaseFragment {
     @Override
     public void onResume() {
         super.onResume();
+        // Coming back from watching a video: refresh the watched-progress
+        // bars so the video just watched shows how far it got.
+        if (!items.isEmpty()) {
+            loadWatchedStates();
+        }
         // Coming back to a home feed that has gone stale: fetch a fresh
         // first page instead of showing the old one forever.
         if (!items.isEmpty() && !loadingFeed
                 && System.currentTimeMillis() - lastLoadTimeMs > STALE_AFTER_MS) {
             refreshFeed();
         }
+    }
+
+    /**
+     * Loads the saved playback position of every feed item from the local
+     * database (the same {@code stream_state} table the other lists read),
+     * in the background, then rebinds the cards so watched videos get the
+     * red progress bar under their thumbnail, YouTube-style. Videos that
+     * were never watched (or whose history is off) simply get no bar.
+     */
+    private void loadWatchedStates() {
+        if (binding == null
+                || !DependentPreferenceHelper.getPositionsInListsEnabled(requireContext())) {
+            return;
+        }
+        final Context appContext = requireContext().getApplicationContext();
+        final List<HomeFeedItem> snapshot = new ArrayList<>(items);
+        disposables.add(Single.fromCallable(() -> {
+                    final AppDatabase database =
+                            NewPipeDatabase.getInstance(appContext);
+                    final Map<String, long[]> states = new HashMap<>();
+                    for (final HomeFeedItem item : snapshot) {
+                        if (item.isLive()) {
+                            continue;
+                        }
+                        final List<StreamEntity> streams = database.streamDAO()
+                                .getStream(YOUTUBE_SERVICE_ID, item.getUrl())
+                                .blockingFirst();
+                        if (streams.isEmpty() || streams.get(0).getDuration() <= 0) {
+                            continue;
+                        }
+                        final StreamEntity stream = streams.get(0);
+                        final List<StreamStateEntity> saved = database.streamStateDAO()
+                                .getState(stream.getUid())
+                                .blockingFirst();
+                        if (!saved.isEmpty()) {
+                            states.put(item.getVideoId(), new long[]{
+                                    TimeUnit.MILLISECONDS.toSeconds(
+                                            saved.get(0).getProgressMillis()),
+                                    stream.getDuration()});
+                        }
+                    }
+                    return states;
+                })
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(states -> {
+                    if (binding == null || adapter == null) {
+                        return;
+                    }
+                    watchedStates.clear();
+                    watchedStates.putAll(states);
+                    adapter.notifyDataSetChanged();
+                }, throwable -> Log.e(TAG, "Could not load watched states", throwable)));
     }
 
     @Override
@@ -225,9 +294,11 @@ public final class HomeFeedFragment extends BaseFragment {
                     binding.homeFeedRefresh.setRefreshing(false);
                     items.clear();
                     seenVideoIds.clear();
+                    watchedStates.clear();
                     continuationToken = page.getContinuationToken();
                     appendItems(page.getItems());
                     adapter.notifyDataSetChanged();
+                    loadWatchedStates();
                     binding.homeFeedList.scrollToPosition(0);
                     binding.homeFeedErrorDetail.setText(
                             feedClient.getLastFailureDetail());
@@ -266,6 +337,7 @@ public final class HomeFeedFragment extends BaseFragment {
                     }
                     final int added = appendItems(page.getItems());
                     continuationToken = page.getContinuationToken();
+                    loadWatchedStates();
                     if (added > 0) {
                         final int trimmed = trimOldItems();
                         if (trimmed > 0) {
@@ -348,7 +420,14 @@ public final class HomeFeedFragment extends BaseFragment {
             card.itemAdditionalDetails.setText(buildDetailsLine(item));
             CoilHelper.INSTANCE.loadThumbnail(card.itemThumbnailView,
                     item.getThumbnailUrl());
-            card.itemProgressView.setVisibility(View.GONE);
+            final long[] watched = watchedStates.get(item.getVideoId());
+            if (watched != null && !item.isLive() && watched[1] > 0) {
+                card.itemProgressView.setMax((int) watched[1]);
+                card.itemProgressView.setProgress((int) watched[0]);
+                card.itemProgressView.setVisibility(View.VISIBLE);
+            } else {
+                card.itemProgressView.setVisibility(View.GONE);
+            }
             if (item.isLive()) {
                 card.itemDurationView.setText(R.string.duration_live);
                 card.itemDurationView.setBackgroundColor(ContextCompat.getColor(

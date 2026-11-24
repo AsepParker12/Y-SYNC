@@ -8,7 +8,9 @@
     <item android:id="@android:id/progress">
         <clip>
             <shape>
-                <solid android:color="@color/dark_youtube_primary_color" />
+                <!-- Watched-progress indicator: always YouTube red, like the
+                     official app, independent of the app theme colours. -->
+                <solid android:color="#FF0000" />
             </shape>
         </clip>
     </item>
